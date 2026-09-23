@@ -9,7 +9,6 @@ import {
   CloudOff,
   Download,
   Gauge,
-  Leaf,
   LoaderCircle,
   MapPin,
   Scale,
@@ -462,21 +461,16 @@ export default function Home() {
   const existingWeight = selected ? weightsByUuid.get(selected.uuid.toUpperCase()) : undefined;
 
   return (
-    <main className="min-h-screen bg-[#f2f5ed] text-[#17352a]">
+    <main className="min-h-screen bg-[#edf3f8] text-[#17365a]">
       <Toaster position="top-center" richColors />
 
-      <header className="border-b border-white/10 bg-[#0b4b33] text-white shadow-[0_8px_30px_rgba(6,45,30,0.16)]">
-        <div className="mx-auto flex max-w-[1480px] items-center justify-between gap-6 px-5 py-4 sm:px-8">
+      <header className="mx-3 mt-2 rounded-lg bg-[#1f4269] text-white shadow-[0_14px_28px_rgba(24,55,88,0.17)]">
+        <div className="mx-auto flex max-w-[1780px] items-center justify-between gap-6 px-5 py-[18px] sm:px-12">
           <div className="flex items-center gap-3">
-            <div className="grid size-11 place-items-center rounded-xl bg-[#d7de28] text-[#0b4b33] shadow-inner">
-              <Leaf className="size-6" strokeWidth={2.5} />
-            </div>
+            <img src="/gdm-logo.svg" alt="GDM" className="h-12 w-[68px] object-contain" />
             <div>
-              <div className="flex items-baseline gap-2">
-                <span className="text-2xl font-black tracking-[-0.04em]">GDM</span>
-                <span className="hidden text-sm font-medium text-white/70 sm:inline">Pesquisa &amp; Desenvolvimento</span>
-              </div>
-              <p className="text-sm text-white/75">Pesagem de ensaios de trigo</p>
+              <p className="text-[22px] font-black tracking-[-0.02em]">Pesagem de Ensaios</p>
+              <p className="text-sm text-white/75">GDM Field Operations · Trigo</p>
             </div>
           </div>
 
@@ -485,64 +479,64 @@ export default function Home() {
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-white/60">Avanço geral</p>
               <p className="text-lg font-bold">{totalCompleted} de {totalPlots}</p>
             </div>
-            <div className="grid size-12 place-items-center rounded-full border-4 border-[#d7de28] text-sm font-black">
+            <div className="grid size-12 place-items-center rounded-full border-4 border-[#8bb7df] text-sm font-black">
               {overallPercent}%
             </div>
           </div>
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-[1480px] gap-6 px-4 py-5 sm:px-8 lg:grid-cols-[minmax(0,1fr)_410px] lg:py-8">
+      <div className="mx-auto grid max-w-[1500px] gap-6 px-[18px] py-6 lg:grid-cols-[minmax(0,1.32fr)_minmax(380px,.98fr)]">
         <section className="min-w-0 space-y-5">
-          <div className="rounded-[24px] border border-[#dce5d6] bg-white p-5 shadow-[0_18px_45px_rgba(21,66,45,0.08)] sm:p-7">
-            <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+          <div className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,0.08)] sm:p-6">
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-4 border-b-2 border-[#d6e3ef] pb-3">
               <div>
-                <p className="mb-1 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em] text-[#6d7f75]">
-                  <ScanLine className="size-4 text-[#668900]" /> Leitura da parcela
+                <p className="mb-1 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.1em] text-[#315b86]">
+                  <ScanLine className="size-4" /> Operação de pesagem
                 </p>
-                <h1 className="text-2xl font-extrabold tracking-[-0.025em] text-[#123e2d] sm:text-3xl">
-                  Bipe o código para começar
+                <h1 className="text-2xl font-extrabold tracking-[-0.02em] text-[#173a61] sm:text-[29px]">
+                  Leitura da parcela
                 </h1>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2">
-                <Button type="button" variant="outline" onClick={exportCsv} className="h-9 rounded-full border-[#9bb09e] bg-white px-3 text-sm font-bold text-[#24513d] hover:bg-[#f5f8f2]">
+                <Button type="button" onClick={exportCsv} className="h-9 rounded-[5px] bg-[#c88918] px-3 text-sm font-bold text-white hover:bg-[#b77710]">
                   <Download className="size-4" /> Exportar CSV ({totalCompleted})
                 </Button>
-                <div className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-semibold ${connected ? "bg-[#edf6d4] text-[#426700]" : "bg-[#fff0ed] text-[#a63a2b]"}`}>
+                <div className={`flex items-center gap-2 rounded-[5px] px-3 py-1.5 text-sm font-semibold ${connected ? "bg-[#eaf3fb] text-[#315f8b]" : "bg-[#fff0ed] text-[#a63a2b]"}`}>
                   {connected ? <Cloud className="size-4" /> : <CloudOff className="size-4" />}
                   {connected ? "Sincronizado" : "Sem conexão"}
                 </div>
               </div>
             </div>
 
-            <section className="mb-2 grid gap-3 rounded-2xl border border-[#d8e2d3] bg-[#f7faf4] p-3.5 md:grid-cols-[minmax(190px,.8fr)_minmax(300px,1.2fr)_minmax(145px,.55fr)] md:items-center">
+            <section className="mb-2 grid gap-3 rounded-[5px] border border-[#cbdcec] border-l-4 border-l-[#78a9d8] bg-[#eaf2f9] p-3.5 md:grid-cols-[minmax(190px,.8fr)_minmax(300px,1.2fr)_minmax(145px,.55fr)] md:items-center">
               <div className="flex items-center gap-3">
-                <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#e7eedb] text-[#5c7a10]"><Cable className="size-5" /></div>
+                <div className="grid size-11 shrink-0 place-items-center rounded-[5px] bg-[#d6e6f3] text-[#25537f]"><Cable className="size-5" /></div>
                 <div className="min-w-0">
-                  <p className="font-extrabold text-[#173e2e]">Balança serial</p>
-                  <p className="truncate text-xs text-[#6e8176]" title={scaleStatus}>{scaleStatus}</p>
+                  <p className="font-extrabold text-[#173a61]">Balança serial</p>
+                  <p className="truncate text-xs text-[#60768d]" title={scaleStatus}>{scaleStatus}</p>
                 </div>
               </div>
               <div className="grid grid-cols-[minmax(130px,.72fr)_minmax(150px,1fr)] items-end gap-2">
                 <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">
                   Velocidade
-                  <NativeSelect value={baudRate} onChange={(event) => setBaudRate(event.target.value)} disabled={scaleConnected} className="mt-1 h-10 w-full rounded-[10px] border-[#cbd9c6] bg-white px-2 text-sm font-bold normal-case tracking-normal text-[#173e2e]">
+                  <NativeSelect value={baudRate} onChange={(event) => setBaudRate(event.target.value)} disabled={scaleConnected} className="mt-1 h-10 w-full rounded-[5px] border-[#cbdcec] bg-white px-2 text-sm font-bold normal-case tracking-normal text-[#173a61]">
                     {[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200].map((rate) => <NativeSelectOption key={rate} value={String(rate)}>{rate} baud</NativeSelectOption>)}
                   </NativeSelect>
                 </label>
-                <Button type="button" onClick={() => void toggleScaleConnection()} className={`h-10 rounded-[10px] text-sm font-extrabold ${scaleConnected ? "bg-[#9b392b] hover:bg-[#812f24]" : "bg-[#0b4b33] hover:bg-[#136344]"}`}>
+                <Button type="button" onClick={() => void toggleScaleConnection()} className={`h-10 rounded-[5px] text-sm font-extrabold ${scaleConnected ? "bg-[#d63b38] hover:bg-[#b92f2d]" : "bg-[#1f4269] hover:bg-[#173754]"}`}>
                   {scaleConnected ? "Desconectar" : "Conectar balança"}
                 </Button>
               </div>
               <div className="border-t border-[#d5dfd0] pt-2 md:border-l md:border-t-0 md:pl-4 md:pt-0">
                 <p className="text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">Leitura atual</p>
-                <p className={`text-3xl font-black leading-none tracking-[-.02em] ${scaleWeight === null ? "text-[#123e2d]" : "text-[#618500]"}`}>{scaleWeight === null ? "—" : formatNumber(scaleWeight)}</p>
+                <p className={`text-3xl font-black leading-none tracking-[-.02em] ${scaleWeight === null ? "text-[#173a61]" : "text-[#237a63]"}`}>{scaleWeight === null ? "—" : formatNumber(scaleWeight)}</p>
                 <p className="mt-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">{scaleConnected ? (selected ? "PW preenchido automaticamente" : "Bipe uma parcela para aplicar") : "Aguardando conexão"}</p>
               </div>
             </section>
-            <p className="mb-5 text-xs text-[#74857b]">A conexão COM funciona em Chrome ou Edge via HTTPS. Ao conectar, escolha a porta da balança na janela do navegador.</p>
+            <p className="mb-4 text-xs text-[#647a90]">Conecte a balança, selecione FEID ou UUID e bipe a parcela para preencher o PW automaticamente.</p>
 
-            <form onSubmit={handleScan} className="grid gap-3 sm:grid-cols-[190px_minmax(0,1fr)_auto]">
+            <form onSubmit={handleScan} className="grid gap-3 rounded-[5px] border border-[#cbdcec] bg-[#f8fbfe] p-3.5 sm:grid-cols-[190px_minmax(0,1fr)_auto]">
               <label className="block">
                 <span className="mb-2 block text-sm font-bold text-[#345647]">Identificador</span>
                 <NativeSelect
@@ -554,7 +548,7 @@ export default function Home() {
                     setScanValue("");
                     window.setTimeout(() => scanRef.current?.focus(), 0);
                   }}
-                  className="h-14 w-full rounded-xl border-[#cbd9c6] bg-[#f8faf5] px-4 text-base font-bold text-[#173e2e]"
+                  className="h-14 w-full rounded-[5px] border-2 border-[#d1dfed] bg-white px-4 text-base font-bold text-[#173a61]"
                   aria-label="Tipo de código"
                 >
                   <NativeSelectOption value="feid">FEID da parcela</NativeSelectOption>
@@ -565,13 +559,13 @@ export default function Home() {
               <label className="block">
                 <span className="mb-2 block text-sm font-bold text-[#345647]">Código lido</span>
                 <div className="relative">
-                  <Barcode className="pointer-events-none absolute left-4 top-1/2 size-6 -translate-y-1/2 text-[#709077]" />
+                  <Barcode className="pointer-events-none absolute left-4 top-1/2 size-6 -translate-y-1/2 text-[#6e94b9]" />
                   <Input
                     ref={scanRef}
                     autoFocus
                     value={scanValue}
                     onChange={(event) => setScanValue(event.target.value)}
-                    className="h-14 rounded-xl border-[#cbd9c6] bg-[#f8faf5] pl-13 pr-4 font-mono text-lg font-semibold tracking-wide text-[#173e2e] focus-visible:border-[#7c9b16] focus-visible:ring-[#d7de28]/35"
+                    className="h-14 rounded-[5px] border-2 border-[#d1dfed] bg-white pl-13 pr-4 font-mono text-lg font-semibold tracking-wide text-[#173a61] focus-visible:border-[#7fa9d2] focus-visible:ring-[#669dcf]/20"
                     placeholder={scanMode === "feid" ? "Leia ou digite o FEID" : "Leia ou digite o UUID"}
                     autoComplete="off"
                     spellCheck={false}
@@ -580,12 +574,12 @@ export default function Home() {
                 </div>
               </label>
 
-              <Button type="submit" className="mt-auto h-14 rounded-xl bg-[#0b4b33] px-7 text-base font-bold hover:bg-[#136344]">
+              <Button type="submit" className="mt-auto h-14 rounded-[5px] bg-[#1f4269] px-7 text-base font-bold hover:bg-[#173754]">
                 Conferir
               </Button>
             </form>
 
-            <p className="mt-3 text-sm text-[#6a7d72]">O leitor envia o código como teclado. Mantenha este campo selecionado e finalize a leitura com Enter.</p>
+            <p className="mt-3 text-sm text-[#657b90]">O leitor envia o código como teclado. Mantenha este campo selecionado e finalize a leitura com Enter.</p>
 
             {scanError && (
               <div role="alert" className="mt-5 flex items-center gap-3 rounded-xl border border-[#f2c8be] bg-[#fff4f1] px-4 py-3 text-[#963827]">
@@ -596,14 +590,14 @@ export default function Home() {
           </div>
 
           {selected ? (
-            <article className="overflow-hidden rounded-[24px] border border-[#dce5d6] bg-white shadow-[0_18px_45px_rgba(21,66,45,0.08)]">
-              <div className="border-b border-[#e3eadf] bg-[linear-gradient(120deg,#f5f8e7_0%,#f8fbf5_70%)] p-5 sm:p-7">
+            <article className="overflow-hidden rounded-lg border border-[#cbdcec] bg-white shadow-[0_10px_28px_rgba(26,59,93,0.08)]">
+              <div className="border-b border-[#2f5a84] bg-[#1f4269] p-5 text-white sm:p-6">
                 <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-2 rounded-full bg-[#d7de28] px-3 py-1.5 text-sm font-black uppercase tracking-[0.08em] text-[#264a17]">
+                  <span className="inline-flex items-center gap-2 rounded-[5px] bg-[#d9e9f6] px-3 py-1.5 text-sm font-black uppercase tracking-[0.08em] text-[#173f66]">
                     <Check className="size-4" /> Parcela encontrada
                   </span>
                   {existingWeight && (
-                    <span className="rounded-full bg-[#fff0c8] px-3 py-1.5 text-sm font-bold text-[#785b00]">
+                    <span className="rounded-[5px] bg-[#f5cf77] px-3 py-1.5 text-sm font-bold text-[#6a4700]">
                       Já pesada: PW {formatNumber(existingWeight.weight)}
                     </span>
                   )}
@@ -611,15 +605,15 @@ export default function Home() {
 
                 <div className="grid gap-5 md:grid-cols-[minmax(0,1.45fr)_minmax(220px,0.55fr)]">
                   <div>
-                    <p className="mb-1 text-xs font-bold uppercase tracking-[0.14em] text-[#708477]">Entity name</p>
-                    <h2 className="break-words text-2xl font-extrabold leading-tight tracking-[-0.025em] text-[#0d4a34] sm:text-3xl">{selected.entityName}</h2>
-                    <p className="mb-1 mt-5 text-xs font-bold uppercase tracking-[0.14em] text-[#708477]">(OBS) Name</p>
-                    <p className="text-4xl font-black tracking-[-0.04em] text-[#17382b] sm:text-5xl">{selected.obsName}</p>
+                    <p className="mb-1 text-xs font-bold uppercase tracking-[0.14em] text-[#bbcee1]">Entity name</p>
+                    <h2 className="break-words text-2xl font-extrabold leading-tight tracking-[-0.025em] text-white sm:text-3xl">{selected.entityName}</h2>
+                    <p className="mb-1 mt-5 text-xs font-bold uppercase tracking-[0.14em] text-[#bbcee1]">(OBS) Name</p>
+                    <p className="text-4xl font-black tracking-[-0.04em] text-white sm:text-5xl">{selected.obsName}</p>
                   </div>
-                  <div className="rounded-2xl border border-[#dbe5d7] bg-white/80 p-4">
-                    <p className="text-xs font-bold uppercase tracking-[0.12em] text-[#708477]">(GER) Name</p>
-                    <p className="mt-2 break-words text-xl font-extrabold leading-tight text-[#204c39]">{selected.gerName || "—"}</p>
-                    <p className="mt-4 flex items-center gap-2 text-sm font-semibold text-[#61766a]"><MapPin className="size-4" /> {selected.location} · {selected.site}</p>
+                  <div className="rounded-md border border-white/20 bg-white/10 p-4">
+                    <p className="text-xs font-bold uppercase tracking-[0.12em] text-[#bbcee1]">(GER) Name</p>
+                    <p className="mt-2 break-words text-xl font-extrabold leading-tight text-white">{selected.gerName || "—"}</p>
+                    <p className="mt-4 flex items-center gap-2 text-sm font-semibold text-[#c7d7e7]"><MapPin className="size-4" /> {selected.location} · {selected.site}</p>
                   </div>
                 </div>
               </div>
@@ -632,23 +626,23 @@ export default function Home() {
                     ["Row", selected.row],
                     ["Column", selected.column],
                   ].map(([label, value]) => (
-                    <div key={label} className="rounded-2xl border border-[#e0e8dc] bg-[#f8faf6] p-4">
-                      <dt className="text-xs font-bold uppercase tracking-[0.1em] text-[#718177]">{label}</dt>
-                      <dd className="mt-1 text-2xl font-black text-[#173d2d]">{value || "—"}</dd>
+                    <div key={label} className="rounded-md border border-[#cfdeeb] bg-[#f7fafe] p-4">
+                      <dt className="text-xs font-bold uppercase tracking-[0.1em] text-[#6d8195]">{label}</dt>
+                      <dd className="mt-1 text-2xl font-black text-[#173a61]">{value || "—"}</dd>
                     </div>
                   ))}
-                  <div className="col-span-2 rounded-2xl border border-[#e0e8dc] bg-[#f8faf6] p-4 sm:col-span-4">
-                    <dt className="text-xs font-bold uppercase tracking-[0.1em] text-[#718177]">Identificadores</dt>
-                    <dd className="mt-2 grid gap-2 text-sm text-[#315444] sm:grid-cols-2">
+                  <div className="col-span-2 rounded-md border border-[#cfdeeb] bg-[#f7fafe] p-4 sm:col-span-4">
+                    <dt className="text-xs font-bold uppercase tracking-[0.1em] text-[#6d8195]">Identificadores</dt>
+                    <dd className="mt-2 grid gap-2 text-sm text-[#375b7d] sm:grid-cols-2">
                       <span><strong>FEID:</strong> {selected.feid}</span>
                       <span className="break-all"><strong>UUID:</strong> {selected.uuid}</span>
                     </dd>
                   </div>
                 </dl>
 
-                <form onSubmit={handleSave} className="rounded-2xl bg-[#0b4b33] p-5 text-white shadow-lg shadow-[#0b4b33]/15">
-                  <label htmlFor="plot-weight" className="flex items-center gap-2 text-sm font-bold uppercase tracking-[0.1em] text-white/70">
-                    <Scale className="size-4 text-[#d7de28]" /> Peso da parcela (PW)
+                <form onSubmit={handleSave} className="rounded-md border border-[#cbdcec] bg-[#eaf2f9] p-5 text-[#173a61]">
+                  <label htmlFor="plot-weight" className="flex items-center gap-2 text-sm font-bold uppercase tracking-[0.1em] text-[#365c81]">
+                    <Scale className="size-4" /> Peso da parcela (PW)
                   </label>
                   <Input
                     id="plot-weight"
@@ -656,11 +650,11 @@ export default function Home() {
                     inputMode="decimal"
                     value={weightValue}
                     onChange={(event) => setWeightValue(event.target.value)}
-                    className="mt-3 h-16 rounded-xl border-white/20 bg-white px-4 text-3xl font-black text-[#123d2c] placeholder:text-[#8ca096] focus-visible:border-[#d7de28] focus-visible:ring-[#d7de28]/35"
+                    className="mt-3 h-16 rounded-[5px] border-2 border-[#d1dfed] bg-white px-4 text-3xl font-black text-[#173a61] placeholder:text-[#8ca0b5] focus-visible:border-[#7fa9d2] focus-visible:ring-[#669dcf]/20"
                     placeholder="0,000"
                     autoComplete="off"
                   />
-                  <Button type="submit" disabled={saving} className="mt-3 h-12 w-full rounded-xl bg-[#d7de28] text-base font-black text-[#244b18] hover:bg-[#e6eb49]">
+                  <Button type="submit" disabled={saving} className="mt-3 h-12 w-full rounded-[5px] bg-[#1f4269] text-base font-black text-white hover:bg-[#173754]">
                     {saving ? <LoaderCircle className="animate-spin" /> : <Check />}
                     {existingWeight ? "Atualizar PW" : "Salvar PW"}
                   </Button>
@@ -668,13 +662,13 @@ export default function Home() {
               </div>
             </article>
           ) : (
-            <div className="grid min-h-[330px] place-items-center rounded-[24px] border border-dashed border-[#bdcdb8] bg-white/55 p-8 text-center">
+            <div className="grid min-h-[260px] place-items-center rounded-lg border-2 border-dashed border-[#86acd1] bg-[#f8fbfe] p-8 text-center">
               <div>
-                <div className="mx-auto grid size-20 place-items-center rounded-full bg-[#eaf0df] text-[#688614]"><Scale className="size-9" /></div>
-                <h2 className="mt-5 text-xl font-extrabold text-[#214535]">Aguardando leitura</h2>
-                <p className="mx-auto mt-2 max-w-md text-[#687c70]">Os dados da parcela aparecerão aqui para conferência antes de registrar o peso.</p>
+                <div className="mx-auto grid size-20 place-items-center rounded-lg bg-[#dceaf6] text-[#285882]"><Scale className="size-9" /></div>
+                <h2 className="mt-5 text-xl font-extrabold text-[#173a61]">Aguardando leitura</h2>
+                <p className="mx-auto mt-2 max-w-md text-[#647a90]">Os dados da parcela aparecerão aqui para conferência antes de registrar o peso.</p>
                 {lastSaved && (
-                  <p className="mt-5 inline-flex items-center gap-2 rounded-full bg-[#edf6d4] px-4 py-2 text-sm font-bold text-[#456400]">
+                  <p className="mt-5 inline-flex items-center gap-2 rounded-[5px] bg-[#dceaf6] px-4 py-2 text-sm font-bold text-[#25537f]">
                     <Check className="size-4" /> Último PW salvo: {lastSaved.obsName} · {formatNumber(lastSaved.weight)}
                   </p>
                 )}
@@ -683,18 +677,18 @@ export default function Home() {
           )}
         </section>
 
-        <aside className="h-fit rounded-[24px] border border-[#dce5d6] bg-white p-5 shadow-[0_18px_45px_rgba(21,66,45,0.08)] sm:p-6 lg:sticky lg:top-6">
-          <div className="flex items-start justify-between gap-4">
+        <aside className="h-fit rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,0.08)] sm:p-6 lg:sticky lg:top-[18px] lg:max-h-[calc(100vh-36px)] lg:overflow-auto">
+          <div className="flex items-start justify-between gap-4 border-b-2 border-[#d6e3ef] pb-3">
             <div>
-              <p className="flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em] text-[#687c70]"><Gauge className="size-4 text-[#688900]" /> Relatório em tempo real</p>
-              <h2 className="mt-1 text-2xl font-extrabold tracking-[-0.025em] text-[#123e2d]">Avanço por ensaio</h2>
+              <p className="flex items-center gap-2 text-sm font-bold uppercase tracking-[0.1em] text-[#315b86]"><Gauge className="size-4" /> Relatório em tempo real</p>
+              <h2 className="mt-1 text-2xl font-extrabold tracking-[-0.02em] text-[#173a61]">Avanço por ensaio</h2>
             </div>
-            <span className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-[#edf6d4] px-2.5 py-1 text-xs font-bold text-[#496a00]">
-              <span className="size-2 rounded-full bg-[#75a000]" /> Ao vivo
+            <span className="mt-1 inline-flex items-center gap-1.5 rounded-[5px] bg-[#eaf3fb] px-2.5 py-1 text-xs font-bold text-[#315f8b]">
+              <span className="size-2 rounded-full bg-[#4d91cf]" /> Ao vivo
             </span>
           </div>
 
-          <div className="my-5 rounded-2xl bg-[#0b4b33] p-5 text-white">
+          <div className="my-4 rounded-[7px] bg-[#1f4269] p-5 text-white">
             <div className="flex items-end justify-between gap-4">
               <div>
                 <p className="text-sm font-semibold text-white/65">Total concluído</p>
@@ -702,26 +696,26 @@ export default function Home() {
               </div>
               <p className="text-right text-sm text-white/75"><strong className="text-lg text-white">{totalCompleted}</strong> pesadas<br />{Math.max(totalPlots - totalCompleted, 0)} faltam</p>
             </div>
-            <Progress value={overallPercent} className="mt-4 h-3 bg-white/15 [&_[data-slot=progress-indicator]]:bg-[#d7de28]" />
+            <Progress value={overallPercent} className="mt-4 h-3 bg-white/15 [&_[data-slot=progress-indicator]]:bg-[#8bb7df]" />
           </div>
 
           <div className="space-y-3">
             {trials.map((trial) => (
-              <article key={trial.entityName} className="rounded-2xl border border-[#e0e8dc] bg-[#fafcf8] p-4">
+              <article key={trial.entityName} className="rounded-[7px] border border-[#cfdeeb] bg-[#f8fbfe] p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <span className="inline-flex rounded-md bg-[#e7eedb] px-2 py-1 text-xs font-black text-[#4d6813]">{trial.trialType}</span>
-                    <h3 className="mt-2 break-words text-base font-extrabold leading-tight text-[#173e2e]">{trial.entityName}</h3>
-                    <p className="mt-1 text-sm text-[#6a7d71]">{trial.location} · parcelas {trial.initial}–{trial.final}</p>
+                    <span className="inline-flex rounded bg-[#dceaf6] px-2 py-1 text-xs font-black text-[#285882]">{trial.trialType}</span>
+                    <h3 className="mt-2 break-words text-base font-extrabold leading-tight text-[#173a61]">{trial.entityName}</h3>
+                    <p className="mt-1 text-sm text-[#657b90]">{trial.location} · parcelas {trial.initial}–{trial.final}</p>
                   </div>
-                  <div className={`grid size-14 shrink-0 place-items-center rounded-full text-sm font-black ${trial.percent === 100 ? "bg-[#d7de28] text-[#284b18]" : "bg-[#e8eee4] text-[#3b5b49]"}`}>
+                  <div className={`grid size-14 shrink-0 place-items-center rounded-[7px] text-sm font-black ${trial.percent === 100 ? "bg-[#2c8069] text-white" : "bg-[#e4eef7] text-[#315a80]"}`}>
                     {trial.percent}%
                   </div>
                 </div>
-                <Progress value={trial.percent} className="mt-4 h-2.5 bg-[#e1e8dc] [&_[data-slot=progress-indicator]]:bg-[#78a000]" />
+                <Progress value={trial.percent} className="mt-4 h-2.5 bg-[#dde7f0] [&_[data-slot=progress-indicator]]:bg-[#4f8fc9]" />
                 <div className="mt-3 flex items-center justify-between text-sm">
-                  <span className="font-bold text-[#365545]">{trial.completed} de {trial.total}</span>
-                  <span className={trial.remaining === 0 ? "font-black text-[#4d7100]" : "font-semibold text-[#6c7f73]"}>
+                  <span className="font-bold text-[#365b80]">{trial.completed} de {trial.total}</span>
+                  <span className={trial.remaining === 0 ? "font-black text-[#237a63]" : "font-semibold text-[#657b90]"}>
                     {trial.remaining === 0 ? "Ensaio finalizado" : `${trial.remaining} faltam`}
                   </span>
                 </div>
@@ -729,7 +723,7 @@ export default function Home() {
             ))}
           </div>
 
-          <p className="mt-4 text-center text-xs text-[#7a8a81]">
+          <p className="mt-4 text-center text-xs text-[#6d8195]">
             {loading ? "Carregando pesagens…" : "Atualização automática a cada 5 segundos"}
           </p>
         </aside>

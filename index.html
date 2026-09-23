@@ -16,10 +16,10 @@
     <header class="topbar">
       <div class="topbar__inner">
         <div class="brand">
-          <div class="brand__mark" aria-hidden="true">G</div>
+          <img class="brand__logo" src="public/gdm-logo.svg" alt="GDM" />
           <div>
-            <div class="brand__line"><strong>GDM</strong><span>Pesquisa &amp; Desenvolvimento</span></div>
-            <p>Pesagem de ensaios de trigo</p>
+            <div class="brand__line"><strong>Pesagem de Ensaios</strong></div>
+            <p>GDM Field Operations · Trigo</p>
           </div>
         </div>
         <div class="overall overall--header" aria-label="Avanço geral">
@@ -34,8 +34,8 @@
         <article class="panel scan-panel">
           <div class="panel-heading">
             <div>
-              <p class="eyebrow">⌁ Leitura da parcela</p>
-              <h1>Bipe o código para começar</h1>
+              <p class="eyebrow">⚖ Operação de pesagem</p>
+              <h1>Leitura da parcela</h1>
             </div>
             <div class="panel-actions">
               <button id="export-csv" class="outline-button" type="button">⇩ Exportar CSV <span id="export-count">(0)</span></button>
@@ -67,7 +67,7 @@
               <span>Leitura atual</span><strong id="scale-weight">—</strong><small id="scale-reading-note">Aguardando conexão</small>
             </div>
           </section>
-          <p id="serial-help" class="serial-help">A conexão COM funciona em Chrome ou Edge via HTTPS. Ao conectar, escolha a porta da balança na janela do navegador.</p>
+          <p id="serial-help" class="serial-help">Conecte a balança, selecione FEID ou UUID e bipe a parcela para preencher o PW automaticamente.</p>
 
           <form id="scan-form" class="scan-form">
             <label>
