@@ -81,9 +81,8 @@
               <span>Código lido</span>
               <div class="input-with-icon"><b aria-hidden="true">▥</b><input id="scan-value" autocomplete="off" spellcheck="false" placeholder="Leia ou digite o FEID" autofocus /></div>
             </label>
-            <button class="primary-button" type="submit">Conferir</button>
           </form>
-          <p class="hint">O leitor envia o código como teclado. Mantenha este campo selecionado e finalize a leitura com Enter.</p>
+          <p class="hint"><strong>Fluxo rápido:</strong> bipe para carregar a parcela. Com o peso preenchido, pressione Enter ou bipe a mesma parcela novamente para salvar.</p>
           <div id="scan-error" class="alert" role="alert" hidden></div>
         </article>
 
@@ -125,11 +124,20 @@
           </div>
         </article>
 
-        <section id="empty-state" class="empty-state">
-          <div class="empty-state__icon" aria-hidden="true">⚖</div>
-          <h2>Aguardando leitura</h2>
-          <p>Os dados da parcela aparecerão aqui para conferência antes de registrar o peso.</p>
-          <p id="last-saved" class="last-saved" hidden></p>
+        <section class="panel recent-weighings" aria-labelledby="recent-title">
+          <div class="recent-weighings__heading">
+            <div>
+              <p class="eyebrow">◷ Histórico recente</p>
+              <h2 id="recent-title">Últimas pesagens</h2>
+            </div>
+            <span>10 mais recentes</span>
+          </div>
+          <div id="recent-list" class="recent-list" aria-live="polite"></div>
+          <div id="recent-empty" class="recent-empty">
+            <div aria-hidden="true">⚖</div>
+            <strong>Nenhuma pesagem registrada</strong>
+            <p>As pesagens salvas aparecerão aqui automaticamente.</p>
+          </div>
         </section>
       </section>
 

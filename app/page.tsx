@@ -72,6 +72,12 @@ function formatNumber(value: number) {
   return new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 3 }).format(value);
 }
 
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Horário indisponível";
+  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(date);
+}
+
 function getSerial() {
   return (navigator as Navigator & { serial?: SerialLike }).serial;
 }
@@ -100,7 +106,6 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
   const [connected, setConnected] = useState(true);
   const [scanError, setScanError] = useState("");
-  const [lastSaved, setLastSaved] = useState<WeightRecord | null>(null);
   const [baudRate, setBaudRate] = useState("9600");
   const [scaleConnected, setScaleConnected] = useState(false);
   const [scaleStatus, setScaleStatus] = useState("Não conectada");
@@ -118,6 +123,13 @@ export default function Home() {
 
   const weightsByUuid = useMemo(
     () => new Map(weights.map((item) => [item.uuid.toUpperCase(), item])),
+    [weights],
+  );
+
+  const recentWeights = useMemo(
+    () => [...weights]
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+      .slice(0, 10),
     [weights],
   );
 
@@ -161,11 +173,12 @@ export default function Home() {
     (plot: Plot) => {
       setSelected(plot);
       setScanError("");
+      setScanValue("");
       const existing = weightsRef.current.find(
         (item) => item.uuid.toUpperCase() === plot.uuid.toUpperCase(),
       );
       setWeightValue(existing ? String(existing.weight).replace(".", ",") : "");
-      window.setTimeout(() => weightRef.current?.focus(), 0);
+      window.setTimeout(() => scanRef.current?.focus(), 0);
     },
     [],
   );
@@ -182,7 +195,6 @@ export default function Home() {
     }
     const saved = payload.weight;
     setWeights((current) => [saved, ...current.filter((item) => item.uuid !== saved.uuid)]);
-    setLastSaved(saved);
     setConnected(true);
     return saved;
   }, []);
@@ -366,6 +378,16 @@ export default function Home() {
 
   function handleScan(event: FormEvent) {
     event.preventDefault();
+    const code = scanValue.trim().toUpperCase();
+    const selectedCode = selected
+      ? (scanMode === "feid" ? selected.feid : selected.uuid).toUpperCase()
+      : "";
+
+    if (selected && (!code || code === selectedCode)) {
+      void saveCurrentWeight();
+      return;
+    }
+
     const plot = findPlot(scanMode, scanValue);
     if (!plot) {
       setSelected(null);
@@ -377,12 +399,11 @@ export default function Home() {
     selectPlot(plot);
   }
 
-  async function handleSave(event: FormEvent) {
-    event.preventDefault();
-    if (!selected) return;
+  async function saveCurrentWeight() {
+    if (!selected || saving) return;
     const weight = parseWeight(weightValue);
     if (!Number.isFinite(weight) || weight <= 0) {
-      toast.error("Informe um peso maior que zero.");
+      toast.error("Aguardando um peso válido da balança.");
       weightRef.current?.focus();
       return;
     }
@@ -401,6 +422,11 @@ export default function Home() {
     } finally {
       setSaving(false);
     }
+  }
+
+  function handleSave(event: FormEvent) {
+    event.preventDefault();
+    void saveCurrentWeight();
   }
 
   function exportCsv() {
@@ -536,7 +562,7 @@ export default function Home() {
             </section>
             <p className="mb-4 text-xs text-[#647a90]">Conecte a balança, selecione FEID ou UUID e bipe a parcela para preencher o PW automaticamente.</p>
 
-            <form onSubmit={handleScan} className="grid gap-3 rounded-[5px] border border-[#cbdcec] bg-[#f8fbfe] p-3.5 sm:grid-cols-[190px_minmax(0,1fr)_auto]">
+            <form onSubmit={handleScan} className="grid gap-3 rounded-[5px] border border-[#cbdcec] bg-[#f8fbfe] p-3.5 sm:grid-cols-[190px_minmax(0,1fr)]">
               <label className="block">
                 <span className="mb-2 block text-sm font-bold text-[#345647]">Identificador</span>
                 <NativeSelect
@@ -574,12 +600,9 @@ export default function Home() {
                 </div>
               </label>
 
-              <Button type="submit" className="mt-auto h-14 rounded-[5px] bg-[#1f4269] px-7 text-base font-bold hover:bg-[#173754]">
-                Conferir
-              </Button>
             </form>
 
-            <p className="mt-3 text-sm text-[#657b90]">O leitor envia o código como teclado. Mantenha este campo selecionado e finalize a leitura com Enter.</p>
+            <p className="mt-3 text-sm text-[#657b90]"><strong>Fluxo rápido:</strong> bipe para carregar a parcela. Com o peso preenchido, pressione Enter ou bipe a mesma parcela novamente para salvar.</p>
 
             {scanError && (
               <div role="alert" className="mt-5 flex items-center gap-3 rounded-xl border border-[#f2c8be] bg-[#fff4f1] px-4 py-3 text-[#963827]">
@@ -589,7 +612,7 @@ export default function Home() {
             )}
           </div>
 
-          {selected ? (
+          {selected && (
             <article className="overflow-hidden rounded-lg border border-[#cbdcec] bg-white shadow-[0_10px_28px_rgba(26,59,93,0.08)]">
               <div className="border-b border-[#2f5a84] bg-[#1f4269] p-5 text-white sm:p-6">
                 <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -661,20 +684,41 @@ export default function Home() {
                 </form>
               </div>
             </article>
-          ) : (
-            <div className="grid min-h-[260px] place-items-center rounded-lg border-2 border-dashed border-[#86acd1] bg-[#f8fbfe] p-8 text-center">
-              <div>
-                <div className="mx-auto grid size-20 place-items-center rounded-lg bg-[#dceaf6] text-[#285882]"><Scale className="size-9" /></div>
-                <h2 className="mt-5 text-xl font-extrabold text-[#173a61]">Aguardando leitura</h2>
-                <p className="mx-auto mt-2 max-w-md text-[#647a90]">Os dados da parcela aparecerão aqui para conferência antes de registrar o peso.</p>
-                {lastSaved && (
-                  <p className="mt-5 inline-flex items-center gap-2 rounded-[5px] bg-[#dceaf6] px-4 py-2 text-sm font-bold text-[#25537f]">
-                    <Check className="size-4" /> Último PW salvo: {lastSaved.obsName} · {formatNumber(lastSaved.weight)}
-                  </p>
-                )}
-              </div>
-            </div>
           )}
+
+          <section aria-labelledby="recent-title" className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,0.08)] sm:p-6">
+            <div className="flex items-center justify-between gap-4 border-b-2 border-[#d6e3ef] pb-3">
+              <div>
+                <p className="text-sm font-bold uppercase tracking-[0.1em] text-[#315b86]">◷ Histórico recente</p>
+                <h2 id="recent-title" className="mt-1 text-2xl font-extrabold tracking-[-0.02em] text-[#173a61]">Últimas pesagens</h2>
+              </div>
+              <span className="rounded-[5px] bg-[#eaf3fb] px-2.5 py-1 text-xs font-bold text-[#315f8b]">10 mais recentes</span>
+            </div>
+
+            {recentWeights.length ? (
+              <div className="divide-y divide-[#dbe6f0]">
+                {recentWeights.map((record) => (
+                  <article key={record.uuid} className="grid items-center gap-3 py-3.5 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:gap-5">
+                    <div className="min-w-0">
+                      <p className="truncate text-lg font-extrabold text-[#173a61]">Parcela {record.obsName || "—"}</p>
+                      <p className="mt-1 truncate text-xs text-[#657b90]">{record.entityName || "Ensaio não informado"} · FEID {record.feid || "—"}</p>
+                    </div>
+                    <div className="text-left sm:min-w-24 sm:text-right">
+                      <p className="text-[10px] font-extrabold uppercase tracking-[0.1em] text-[#6d8195]">PW</p>
+                      <p className="text-xl font-black text-[#1f4269]">{formatNumber(record.weight)}</p>
+                    </div>
+                    <time dateTime={record.updatedAt} className="text-xs text-[#657b90] sm:min-w-28 sm:text-right">{formatDateTime(record.updatedAt)}</time>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="grid min-h-[190px] place-content-center justify-items-center text-center">
+                <div className="grid size-14 place-items-center rounded-lg bg-[#dceaf6] text-[#285882]"><Scale className="size-7" /></div>
+                <p className="mt-4 font-extrabold text-[#173a61]">Nenhuma pesagem registrada</p>
+                <p className="mt-1 text-sm text-[#647a90]">As pesagens salvas aparecerão aqui automaticamente.</p>
+              </div>
+            )}
+          </section>
         </section>
 
         <aside className="h-fit rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,0.08)] sm:p-6 lg:sticky lg:top-[18px] lg:max-h-[calc(100vh-36px)] lg:overflow-auto">

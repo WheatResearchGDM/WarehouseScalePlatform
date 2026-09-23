@@ -14,9 +14,10 @@
   const $ = (id) => document.getElementById(id);
   const refs = {
     scanForm: $("scan-form"), scanMode: $("scan-mode"), scanValue: $("scan-value"), scanError: $("scan-error"),
-    plotCard: $("plot-card"), emptyState: $("empty-state"), weightForm: $("weight-form"), weight: $("plot-weight"),
-    saveButton: $("save-button"), existingBadge: $("existing-badge"), lastSaved: $("last-saved"), toast: $("toast"),
+    plotCard: $("plot-card"), weightForm: $("weight-form"), weight: $("plot-weight"),
+    saveButton: $("save-button"), existingBadge: $("existing-badge"), toast: $("toast"),
     trialList: $("trial-list"), exportCsv: $("export-csv"), exportCount: $("export-count"),
+    recentList: $("recent-list"), recentEmpty: $("recent-empty"),
     connectScale: $("connect-scale"), baudRate: $("baud-rate"), scaleStatus: $("scale-status"),
     scaleWeight: $("scale-weight"), scaleReadingNote: $("scale-reading-note"), serialHelp: $("serial-help"),
   };
@@ -34,6 +35,11 @@
 
   function normalize(value) { return String(value || "").trim().toUpperCase(); }
   function formatNumber(value) { return new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 3 }).format(value); }
+  function formatDateTime(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "Horário indisponível";
+    return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(date);
+  }
   function text(id, value) { $(id).textContent = value ?? "—"; }
   function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -200,8 +206,8 @@
   function selectPlot(plot) {
     state.selected = plot;
     refs.scanError.hidden = true;
-    refs.emptyState.hidden = true;
     refs.plotCard.hidden = false;
+    refs.scanValue.value = "";
     text("entity-name", plot.entityName);
     text("obs-name", plot.obsName);
     text("ger-name", plot.gerName || "—");
@@ -218,13 +224,12 @@
     refs.existingBadge.hidden = !existing;
     refs.existingBadge.textContent = existing ? `Já pesada: PW ${formatNumber(existing.weight)}` : "";
     refs.saveButton.textContent = existing ? "✓ Atualizar PW" : "✓ Salvar PW";
-    setTimeout(() => refs.weight.focus(), 0);
+    setTimeout(() => refs.scanValue.focus(), 0);
   }
 
   function clearSelection() {
     state.selected = null;
     refs.plotCard.hidden = true;
-    refs.emptyState.hidden = false;
     refs.scanValue.value = "";
     refs.weight.value = "";
     setTimeout(() => refs.scanValue.focus(), 0);
@@ -278,16 +283,66 @@
         <div class="progress"><span style="width:${trial.percent}%"></span></div>
         <div class="trial__footer"><span>${trial.completed} de ${trial.total}</span><span class="${trial.remaining === 0 ? "done" : ""}">${trial.remaining === 0 ? "Ensaio finalizado" : `${trial.remaining} faltam`}</span></div>
       </article>`).join("");
+
+    renderRecentWeights();
+  }
+
+  function renderRecentWeights() {
+    const recent = Object.values(state.weights)
+      .filter((record) => record && Number.isFinite(Number(record.weight)))
+      .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime())
+      .slice(0, 10);
+
+    refs.recentEmpty.hidden = recent.length > 0;
+    refs.recentList.hidden = recent.length === 0;
+    refs.recentList.innerHTML = recent.map((record) => `
+      <article class="recent-item">
+        <div class="recent-item__plot">
+          <strong>Parcela ${escapeHtml(record.obsName || "—")}</strong>
+          <span>${escapeHtml(record.entityName || "Ensaio não informado")} · FEID ${escapeHtml(record.feid || "—")}</span>
+        </div>
+        <div class="recent-item__weight"><small>PW</small><strong>${escapeHtml(formatNumber(Number(record.weight)))}</strong></div>
+        <time datetime="${escapeHtml(record.updatedAt || "")}">${escapeHtml(formatDateTime(record.updatedAt))}</time>
+      </article>`).join("");
+  }
+
+  function saveCurrentWeight() {
+    if (!state.selected) return;
+    const weight = Number(refs.weight.value.trim().replace(",", "."));
+    if (!Number.isFinite(weight) || weight <= 0) {
+      showToast("Aguardando um peso válido da balança.", true);
+      refs.weight.focus();
+      refs.weight.select();
+      return;
+    }
+
+    const plot = state.selected;
+    state.weights[normalize(plot.uuid)] = {
+      uuid: plot.uuid, feid: plot.feid, entityName: plot.entityName,
+      obsName: plot.obsName, weight, updatedAt: new Date().toISOString(),
+    };
+    persistWeights();
+    renderProgress();
+    showToast(`PW ${formatNumber(weight)} salvo para a parcela ${plot.obsName}.`);
+    clearSelection();
   }
 
   refs.scanForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const code = normalize(refs.scanValue.value);
+    const selectedCode = state.selected
+      ? normalize(refs.scanMode.value === "uuid" ? state.selected.uuid : state.selected.feid)
+      : "";
+
+    if (state.selected && (!code || code === selectedCode)) {
+      saveCurrentWeight();
+      return;
+    }
+
     const plot = refs.scanMode.value === "uuid" ? byUuid.get(code) : byFeid.get(code);
     if (!plot) {
       state.selected = null;
       refs.plotCard.hidden = true;
-      refs.emptyState.hidden = false;
       showScanError(`${refs.scanMode.value.toUpperCase()} não encontrado na base.`);
       showToast("Parcela não encontrada.", true);
       return;
@@ -304,26 +359,7 @@
 
   refs.weightForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!state.selected) return;
-    const weight = Number(refs.weight.value.trim().replace(",", "."));
-    if (!Number.isFinite(weight) || weight <= 0) {
-      showToast("Informe um peso maior que zero.", true);
-      refs.weight.focus();
-      refs.weight.select();
-      return;
-    }
-
-    const plot = state.selected;
-    state.weights[normalize(plot.uuid)] = {
-      uuid: plot.uuid, feid: plot.feid, entityName: plot.entityName,
-      obsName: plot.obsName, weight, updatedAt: new Date().toISOString(),
-    };
-    persistWeights();
-    renderProgress();
-    refs.lastSaved.textContent = `✓ Último PW salvo: ${plot.obsName} · ${formatNumber(weight)}`;
-    refs.lastSaved.hidden = false;
-    showToast(`PW ${formatNumber(weight)} salvo para a parcela ${plot.obsName}.`);
-    clearSelection();
+    saveCurrentWeight();
   });
 
   refs.connectScale.addEventListener("click", () => void toggleScaleConnection());
