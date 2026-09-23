@@ -37,8 +37,37 @@
               <p class="eyebrow">⌁ Leitura da parcela</p>
               <h1>Bipe o código para começar</h1>
             </div>
-            <span class="device-status"><i></i> Salvo neste aparelho</span>
+            <div class="panel-actions">
+              <button id="export-csv" class="outline-button" type="button">⇩ Exportar CSV <span id="export-count">(0)</span></button>
+              <span class="device-status"><i></i> Salvo neste aparelho</span>
+            </div>
           </div>
+
+          <section class="scale-panel" aria-labelledby="scale-title">
+            <div class="scale-panel__intro">
+              <div class="scale-icon" aria-hidden="true">⚖</div>
+              <div><strong id="scale-title">Balança serial</strong><span id="scale-status">Não conectada</span></div>
+            </div>
+            <div class="scale-panel__controls">
+              <label for="baud-rate">Velocidade
+                <select id="baud-rate">
+                  <option value="1200">1200 baud</option>
+                  <option value="2400">2400 baud</option>
+                  <option value="4800">4800 baud</option>
+                  <option value="9600" selected>9600 baud</option>
+                  <option value="19200">19200 baud</option>
+                  <option value="38400">38400 baud</option>
+                  <option value="57600">57600 baud</option>
+                  <option value="115200">115200 baud</option>
+                </select>
+              </label>
+              <button id="connect-scale" class="scale-button" type="button">Conectar balança</button>
+            </div>
+            <div class="scale-reading" aria-live="polite">
+              <span>Leitura atual</span><strong id="scale-weight">—</strong><small id="scale-reading-note">Aguardando conexão</small>
+            </div>
+          </section>
+          <p id="serial-help" class="serial-help">A conexão COM funciona em Chrome ou Edge via HTTPS. Ao conectar, escolha a porta da balança na janela do navegador.</p>
 
           <form id="scan-form" class="scan-form">
             <label>

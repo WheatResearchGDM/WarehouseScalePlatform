@@ -2,10 +2,12 @@
 
 import {
   Barcode,
+  Cable,
   Check,
   CircleAlert,
   Cloud,
   CloudOff,
+  Download,
   Gauge,
   Leaf,
   LoaderCircle,
@@ -34,6 +36,19 @@ type WeightRecord = {
   updatedAt: string;
 };
 
+type SerialPortLike = {
+  readable: ReadableStream<Uint8Array> | null;
+  open(options: { baudRate: number }): Promise<void>;
+  close(): Promise<void>;
+  getInfo?(): { usbVendorId?: number; usbProductId?: number };
+};
+
+type SerialLike = {
+  requestPort(): Promise<SerialPortLike>;
+  addEventListener(type: "disconnect", listener: (event: Event) => void): void;
+  removeEventListener(type: "disconnect", listener: (event: Event) => void): void;
+};
+
 type ModelTool = {
   name: string;
   title: string;
@@ -58,6 +73,24 @@ function formatNumber(value: number) {
   return new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 3 }).format(value);
 }
 
+function getSerial() {
+  return (navigator as Navigator & { serial?: SerialLike }).serial;
+}
+
+function parseScaleWeight(rawLine: string) {
+  const cleaned = rawLine.replace(/\u0000/g, " ").trim();
+  if (!cleaned) return null;
+  const matches = cleaned.match(/[-+]?\d+(?:[.,]\d+)?/g);
+  if (!matches?.length) return null;
+  const value = Number(matches[matches.length - 1].replace(",", "."));
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function csvCell(value: unknown) {
+  const text = String(value ?? "");
+  return /[;"\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
 export default function Home() {
   const [scanMode, setScanMode] = useState<ScanMode>("feid");
   const [scanValue, setScanValue] = useState("");
@@ -69,9 +102,20 @@ export default function Home() {
   const [connected, setConnected] = useState(true);
   const [scanError, setScanError] = useState("");
   const [lastSaved, setLastSaved] = useState<WeightRecord | null>(null);
+  const [baudRate, setBaudRate] = useState("9600");
+  const [scaleConnected, setScaleConnected] = useState(false);
+  const [scaleStatus, setScaleStatus] = useState("Não conectada");
+  const [scaleWeight, setScaleWeight] = useState<number | null>(null);
   const scanRef = useRef<HTMLInputElement>(null);
   const weightRef = useRef<HTMLInputElement>(null);
   const weightsRef = useRef<WeightRecord[]>([]);
+  const selectedRef = useRef<Plot | null>(null);
+  const serialPortRef = useRef<SerialPortLike | null>(null);
+  const serialReaderRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
+  const serialReadTaskRef = useRef<Promise<void> | null>(null);
+  const serialKeepReadingRef = useRef(false);
+  const serialBufferRef = useRef("");
+  const serialFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const weightsByUuid = useMemo(
     () => new Map(weights.map((item) => [item.uuid.toUpperCase(), item])),
@@ -81,6 +125,10 @@ export default function Home() {
   useEffect(() => {
     weightsRef.current = weights;
   }, [weights]);
+
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
 
   const refreshWeights = useCallback(async (quiet = false) => {
     try {
@@ -139,6 +187,113 @@ export default function Home() {
     setConnected(true);
     return saved;
   }, []);
+
+  const applyScaleWeight = useCallback((value: number) => {
+    setScaleWeight(value);
+    if (selectedRef.current) setWeightValue(String(value).replace(".", ","));
+  }, []);
+
+  const consumeSerialText = useCallback((chunk: string) => {
+    serialBufferRef.current += chunk;
+    const lines = serialBufferRef.current.split(/\r\n|\n|\r/);
+    serialBufferRef.current = lines.pop() ?? "";
+    for (const line of lines) {
+      const value = parseScaleWeight(line);
+      if (value !== null) applyScaleWeight(value);
+    }
+    if (serialFlushTimerRef.current) clearTimeout(serialFlushTimerRef.current);
+    serialFlushTimerRef.current = setTimeout(() => {
+      const value = parseScaleWeight(serialBufferRef.current);
+      if (value !== null) applyScaleWeight(value);
+      serialBufferRef.current = "";
+    }, 180);
+  }, [applyScaleWeight]);
+
+  const disconnectScale = useCallback(async (quiet = false) => {
+    serialKeepReadingRef.current = false;
+    if (serialFlushTimerRef.current) clearTimeout(serialFlushTimerRef.current);
+    try { await serialReaderRef.current?.cancel(); } catch { /* reader may already be closed */ }
+    try { await serialReadTaskRef.current; } catch { /* surfaced by the read loop */ }
+    try { await serialPortRef.current?.close(); } catch { /* device may already be gone */ }
+    serialReaderRef.current = null;
+    serialReadTaskRef.current = null;
+    serialPortRef.current = null;
+    serialBufferRef.current = "";
+    setScaleConnected(false);
+    setScaleStatus("Não conectada");
+    setScaleWeight(null);
+    if (!quiet) toast.success("Balança desconectada.");
+  }, []);
+
+  const toggleScaleConnection = useCallback(async () => {
+    if (serialPortRef.current) {
+      await disconnectScale();
+      return;
+    }
+    const serial = getSerial();
+    if (!serial) {
+      toast.error("Use Google Chrome ou Microsoft Edge para conectar pela porta COM.");
+      return;
+    }
+
+    try {
+      const port = await serial.requestPort();
+      await port.open({ baudRate: Number(baudRate) });
+      serialPortRef.current = port;
+      serialKeepReadingRef.current = true;
+      setScaleConnected(true);
+      const info = port.getInfo?.() ?? {};
+      const identifiers = [
+        info.usbVendorId ? `VID ${info.usbVendorId.toString(16).toUpperCase().padStart(4, "0")}` : "",
+        info.usbProductId ? `PID ${info.usbProductId.toString(16).toUpperCase().padStart(4, "0")}` : "",
+      ].filter(Boolean).join(" · ");
+      setScaleStatus(identifiers ? `Conectada · ${identifiers}` : "Conectada à porta selecionada");
+
+      serialReadTaskRef.current = (async () => {
+        const decoder = new TextDecoder();
+        try {
+          while (serialKeepReadingRef.current && port.readable) {
+            const reader = port.readable.getReader();
+            serialReaderRef.current = reader;
+            try {
+              while (serialKeepReadingRef.current) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                if (value) consumeSerialText(decoder.decode(value, { stream: true }));
+              }
+            } finally {
+              reader.releaseLock();
+              serialReaderRef.current = null;
+            }
+          }
+        } catch (error) {
+          if (serialKeepReadingRef.current) {
+            toast.error(error instanceof Error ? error.message : "A leitura da balança foi interrompida.");
+          }
+        }
+      })();
+      toast.success("Balança conectada. Aguardando leitura do peso.");
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "NotFoundError") return;
+      toast.error(error instanceof Error ? error.message : "Não foi possível conectar à balança.");
+      await disconnectScale(true);
+    }
+  }, [baudRate, consumeSerialText, disconnectScale]);
+
+  useEffect(() => {
+    const serial = getSerial();
+    if (!serial) return;
+    const handleDisconnect = (event: Event) => {
+      if (event.target !== serialPortRef.current as unknown as EventTarget) return;
+      void disconnectScale(true);
+      toast.error("A balança foi desconectada do computador.");
+    };
+    serial.addEventListener("disconnect", handleDisconnect);
+    return () => {
+      serial.removeEventListener("disconnect", handleDisconnect);
+      void disconnectScale(true);
+    };
+  }, [disconnectScale]);
 
   useEffect(() => {
     const context = (document as Document & { modelContext?: ModelContext }).modelContext;
@@ -249,6 +404,33 @@ export default function Home() {
     }
   }
 
+  function exportCsv() {
+    const rows = plots
+      .map((plot) => ({ plot, record: weightsByUuid.get(plot.uuid.toUpperCase()) }))
+      .filter((item): item is { plot: Plot; record: WeightRecord } => Boolean(item.record));
+    if (!rows.length) {
+      toast.error("Ainda não há pesagens para exportar.");
+      return;
+    }
+
+    const header = ["Entity name", "(OBS) Name", "Block", "Entry code", "Row", "Column", "(GER) Name", "FEID", "UUID", "PW", "Atualizado em"];
+    const content = [header, ...rows.map(({ plot, record }) => [
+      plot.entityName, plot.obsName, plot.block, plot.entryCode, plot.row, plot.column,
+      plot.gerName, plot.feid, plot.uuid, String(record.weight).replace(".", ","), record.updatedAt,
+    ])].map((row) => row.map(csvCell).join(";")).join("\r\n");
+    const blob = new Blob(["\uFEFF", content], { type: "text/csv;charset=utf-8" });
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+    link.href = href;
+    link.download = `pesagens-trigo_${stamp}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(href);
+    toast.success(`${rows.length} pesagem(ns) exportada(s) em CSV.`);
+  }
+
   const trials = useMemo(() => {
     const grouped = new Map<string, Plot[]>();
     for (const plot of plots) {
@@ -322,11 +504,43 @@ export default function Home() {
                   Bipe o código para começar
                 </h1>
               </div>
-              <div className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-semibold ${connected ? "bg-[#edf6d4] text-[#426700]" : "bg-[#fff0ed] text-[#a63a2b]"}`}>
-                {connected ? <Cloud className="size-4" /> : <CloudOff className="size-4" />}
-                {connected ? "Sincronizado" : "Sem conexão"}
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button type="button" variant="outline" onClick={exportCsv} className="h-9 rounded-full border-[#9bb09e] bg-white px-3 text-sm font-bold text-[#24513d] hover:bg-[#f5f8f2]">
+                  <Download className="size-4" /> Exportar CSV ({totalCompleted})
+                </Button>
+                <div className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-semibold ${connected ? "bg-[#edf6d4] text-[#426700]" : "bg-[#fff0ed] text-[#a63a2b]"}`}>
+                  {connected ? <Cloud className="size-4" /> : <CloudOff className="size-4" />}
+                  {connected ? "Sincronizado" : "Sem conexão"}
+                </div>
               </div>
             </div>
+
+            <section className="mb-2 grid gap-3 rounded-2xl border border-[#d8e2d3] bg-[#f7faf4] p-3.5 md:grid-cols-[minmax(190px,.8fr)_minmax(300px,1.2fr)_minmax(145px,.55fr)] md:items-center">
+              <div className="flex items-center gap-3">
+                <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#e7eedb] text-[#5c7a10]"><Cable className="size-5" /></div>
+                <div className="min-w-0">
+                  <p className="font-extrabold text-[#173e2e]">Balança serial</p>
+                  <p className="truncate text-xs text-[#6e8176]" title={scaleStatus}>{scaleStatus}</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-[minmax(130px,.72fr)_minmax(150px,1fr)] items-end gap-2">
+                <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">
+                  Velocidade
+                  <NativeSelect value={baudRate} onChange={(event) => setBaudRate(event.target.value)} disabled={scaleConnected} className="mt-1 h-10 w-full rounded-[10px] border-[#cbd9c6] bg-white px-2 text-sm font-bold normal-case tracking-normal text-[#173e2e]">
+                    {[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200].map((rate) => <NativeSelectOption key={rate} value={String(rate)}>{rate} baud</NativeSelectOption>)}
+                  </NativeSelect>
+                </label>
+                <Button type="button" onClick={() => void toggleScaleConnection()} className={`h-10 rounded-[10px] text-sm font-extrabold ${scaleConnected ? "bg-[#9b392b] hover:bg-[#812f24]" : "bg-[#0b4b33] hover:bg-[#136344]"}`}>
+                  {scaleConnected ? "Desconectar" : "Conectar balança"}
+                </Button>
+              </div>
+              <div className="border-t border-[#d5dfd0] pt-2 md:border-l md:border-t-0 md:pl-4 md:pt-0">
+                <p className="text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">Leitura atual</p>
+                <p className={`text-3xl font-black leading-none tracking-[-.02em] ${scaleWeight === null ? "text-[#123e2d]" : "text-[#618500]"}`}>{scaleWeight === null ? "—" : formatNumber(scaleWeight)}</p>
+                <p className="mt-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">{scaleConnected ? (selected ? "PW preenchido automaticamente" : "Bipe uma parcela para aplicar") : "Aguardando conexão"}</p>
+              </div>
+            </section>
+            <p className="mb-5 text-xs text-[#74857b]">A conexão COM funciona em Chrome ou Edge via HTTPS. Ao conectar, escolha a porta da balança na janela do navegador.</p>
 
             <form onSubmit={handleScan} className="grid gap-3 sm:grid-cols-[190px_minmax(0,1fr)_auto]">
               <label className="block">

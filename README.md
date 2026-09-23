@@ -10,11 +10,18 @@ A versão do GitHub Pages salva os pesos no navegador do equipamento e atualiza 
 relatório imediatamente. Para sincronização entre vários aparelhos, use a versão
 com backend Cloudflare D1 descrita abaixo.
 
+A conexão com a balança requer Chrome ou Edge, acesso por HTTPS e autorização do
+operador para a porta serial. A configuração padrão é 9600 baud e pode ser alterada
+na própria tela antes da conexão.
+
 ## Funcionalidades
 
 - leitura de parcelas por FEID ou UUID, compatível com leitores que funcionam como teclado;
 - conferência de Entity name, (OBS) Name, Block, Entry code, Row, Column e (GER) Name;
 - registro e atualização do PW (Plot weight);
+- conexão direta com balanças pela porta COM usando Web Serial, com velocidade configurável;
+- preenchimento automático do PW a partir da leitura serial;
+- exportação das parcelas pesadas em CSV compatível com Excel;
 - progresso em tempo real por ensaio, calculado pelos intervalos Initial plot e Final plot;
 - interface responsiva com a identidade visual da GDM;
 - persistência em Cloudflare D1 e atualização automática entre dispositivos.

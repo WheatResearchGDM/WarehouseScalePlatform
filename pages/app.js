@@ -2,7 +2,11 @@
   "use strict";
 
   const STORAGE_KEY = "gdm-warehouse-scale-weights-v1";
-  const state = { plots: [], selected: null, weights: loadWeights() };
+  const state = {
+    plots: [], selected: null, weights: loadWeights(),
+    serialPort: null, serialReader: null, readLoop: null, keepReading: false,
+    serialBuffer: "", serialFlushTimer: null,
+  };
   const byFeid = new Map();
   const byUuid = new Map();
   let toastTimer;
@@ -12,7 +16,9 @@
     scanForm: $("scan-form"), scanMode: $("scan-mode"), scanValue: $("scan-value"), scanError: $("scan-error"),
     plotCard: $("plot-card"), emptyState: $("empty-state"), weightForm: $("weight-form"), weight: $("plot-weight"),
     saveButton: $("save-button"), existingBadge: $("existing-badge"), lastSaved: $("last-saved"), toast: $("toast"),
-    trialList: $("trial-list"),
+    trialList: $("trial-list"), exportCsv: $("export-csv"), exportCount: $("export-count"),
+    connectScale: $("connect-scale"), baudRate: $("baud-rate"), scaleStatus: $("scale-status"),
+    scaleWeight: $("scale-weight"), scaleReadingNote: $("scale-reading-note"), serialHelp: $("serial-help"),
   };
 
   function loadWeights() {
@@ -46,6 +52,149 @@
     refs.scanError.hidden = false;
     refs.scanValue.focus();
     refs.scanValue.select();
+  }
+
+  function parseScaleWeight(rawLine) {
+    const cleaned = String(rawLine || "").replace(/\u0000/g, " ").trim();
+    if (!cleaned) return null;
+    const matches = cleaned.match(/[-+]?\d+(?:[.,]\d+)?/g);
+    if (!matches?.length) return null;
+    const value = Number(matches[matches.length - 1].replace(",", "."));
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  }
+
+  function applyScaleWeight(value, rawLine) {
+    refs.scaleWeight.textContent = formatNumber(value);
+    refs.scaleWeight.classList.add("is-live");
+    refs.scaleReadingNote.textContent = state.selected ? "PW preenchido automaticamente" : "Bipe uma parcela para aplicar";
+    refs.scaleWeight.title = String(rawLine || "").trim();
+    if (state.selected) refs.weight.value = String(value).replace(".", ",");
+  }
+
+  function consumeSerialText(chunk) {
+    state.serialBuffer += chunk;
+    const lines = state.serialBuffer.split(/\r\n|\n|\r/);
+    state.serialBuffer = lines.pop() || "";
+    for (const line of lines) {
+      const value = parseScaleWeight(line);
+      if (value !== null) applyScaleWeight(value, line);
+    }
+    clearTimeout(state.serialFlushTimer);
+    state.serialFlushTimer = setTimeout(() => {
+      const value = parseScaleWeight(state.serialBuffer);
+      if (value !== null) applyScaleWeight(value, state.serialBuffer);
+      state.serialBuffer = "";
+    }, 180);
+  }
+
+  async function readFromScale() {
+    const decoder = new TextDecoder();
+    try {
+      while (state.keepReading && state.serialPort?.readable) {
+        state.serialReader = state.serialPort.readable.getReader();
+        try {
+          while (state.keepReading) {
+            const { value, done } = await state.serialReader.read();
+            if (done) break;
+            if (value) consumeSerialText(decoder.decode(value, { stream: true }));
+          }
+        } finally {
+          state.serialReader.releaseLock();
+          state.serialReader = null;
+        }
+      }
+    } catch (error) {
+      if (state.keepReading) {
+        showToast(error instanceof Error ? error.message : "A leitura da balança foi interrompida.", true);
+      }
+    }
+  }
+
+  function setScaleConnected(connected, label = "Não conectada") {
+    refs.connectScale.dataset.connected = String(connected);
+    refs.connectScale.textContent = connected ? "Desconectar" : "Conectar balança";
+    refs.baudRate.disabled = connected;
+    refs.scaleStatus.textContent = label;
+    if (!connected) {
+      refs.scaleWeight.textContent = "—";
+      refs.scaleWeight.classList.remove("is-live");
+      refs.scaleReadingNote.textContent = "Aguardando conexão";
+    }
+  }
+
+  async function disconnectScale(quiet = false) {
+    state.keepReading = false;
+    clearTimeout(state.serialFlushTimer);
+    try { await state.serialReader?.cancel(); } catch { /* reader may already be closed */ }
+    try { await state.readLoop; } catch { /* error already surfaced by the read loop */ }
+    try { await state.serialPort?.close(); } catch { /* disconnected device */ }
+    state.serialReader = null;
+    state.serialPort = null;
+    state.readLoop = null;
+    state.serialBuffer = "";
+    setScaleConnected(false);
+    if (!quiet) showToast("Balança desconectada.");
+  }
+
+  async function toggleScaleConnection() {
+    if (state.serialPort) {
+      await disconnectScale();
+      return;
+    }
+    if (!("serial" in navigator)) {
+      showToast("Use Google Chrome ou Microsoft Edge para conectar pela porta COM.", true);
+      return;
+    }
+    try {
+      const port = await navigator.serial.requestPort();
+      await port.open({ baudRate: Number(refs.baudRate.value) });
+      state.serialPort = port;
+      state.keepReading = true;
+      const info = port.getInfo?.() || {};
+      const identifiers = [
+        info.usbVendorId ? `VID ${info.usbVendorId.toString(16).toUpperCase().padStart(4, "0")}` : "",
+        info.usbProductId ? `PID ${info.usbProductId.toString(16).toUpperCase().padStart(4, "0")}` : "",
+      ].filter(Boolean).join(" · ");
+      setScaleConnected(true, identifiers ? `Conectada · ${identifiers}` : "Conectada à porta selecionada");
+      refs.scaleReadingNote.textContent = "Aguardando peso da balança";
+      state.readLoop = readFromScale();
+      showToast("Balança conectada. Aguardando leitura do peso.");
+    } catch (error) {
+      if (error?.name !== "NotFoundError") {
+        showToast(error instanceof Error ? error.message : "Não foi possível conectar à balança.", true);
+      }
+      await disconnectScale(true);
+    }
+  }
+
+  function csvCell(value) {
+    const text = String(value ?? "");
+    return /[;"\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  }
+
+  function exportCsv() {
+    const rows = state.plots
+      .map((plot) => ({ plot, record: state.weights[normalize(plot.uuid)] }))
+      .filter((item) => item.record);
+    if (!rows.length) {
+      showToast("Ainda não há pesagens para exportar.", true);
+      return;
+    }
+    const header = ["Entity name", "(OBS) Name", "Block", "Entry code", "Row", "Column", "(GER) Name", "FEID", "UUID", "PW", "Atualizado em"];
+    const content = [header, ...rows.map(({ plot, record }) => [
+      plot.entityName, plot.obsName, plot.block, plot.entryCode, plot.row, plot.column,
+      plot.gerName, plot.feid, plot.uuid, String(record.weight).replace(".", ","), record.updatedAt,
+    ])].map((row) => row.map(csvCell).join(";")).join("\r\n");
+    const blob = new Blob(["\uFEFF", content], { type: "text/csv;charset=utf-8" });
+    const link = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+    link.href = URL.createObjectURL(blob);
+    link.download = `pesagens-trigo_${stamp}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
+    showToast(`${rows.length} pesagem(ns) exportada(s) em CSV.`);
   }
 
   function selectPlot(plot) {
@@ -113,6 +262,7 @@
     text("overall-percent", `${percent}%`);
     text("overall-completed", completed);
     text("overall-remaining", remaining);
+    refs.exportCount.textContent = `(${completed})`;
     $("overall-progress").style.width = `${percent}%`;
 
     refs.trialList.innerHTML = trials.map((trial) => `
@@ -174,6 +324,20 @@
     refs.lastSaved.hidden = false;
     showToast(`PW ${formatNumber(weight)} salvo para a parcela ${plot.obsName}.`);
     clearSelection();
+  });
+
+  refs.connectScale.addEventListener("click", () => void toggleScaleConnection());
+  refs.exportCsv.addEventListener("click", exportCsv);
+
+  if (!("serial" in navigator)) {
+    refs.serialHelp.textContent = "Este navegador não oferece conexão COM. Abra o aplicativo no Google Chrome ou Microsoft Edge.";
+  }
+
+  navigator.serial?.addEventListener("disconnect", (event) => {
+    if (event.target === state.serialPort || event.port === state.serialPort) {
+      void disconnectScale(true);
+      showToast("A balança foi desconectada do computador.", true);
+    }
   });
 
   window.addEventListener("storage", (event) => {
