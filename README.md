@@ -2,6 +2,14 @@
 
 Aplicativo operacional para pesagem de parcelas em ensaios de trigo.
 
+## Aplicativo publicado
+
+[Abrir o aplicativo no GitHub Pages](https://wheatresearchgdm.github.io/WarehouseScalePlatform/)
+
+A versão do GitHub Pages salva os pesos no navegador do equipamento e atualiza o
+relatório imediatamente. Para sincronização entre vários aparelhos, use a versão
+com backend Cloudflare D1 descrita abaixo.
+
 ## Funcionalidades
 
 - leitura de parcelas por FEID ou UUID, compatível com leitores que funcionam como teclado;
@@ -36,6 +44,7 @@ O banco utiliza o binding D1 `DB`. Para a prévia local, aplique a migração ge
 
 - `app/page.tsx`: fluxo operacional e painel de progresso;
 - `app/api/weights/route.ts`: leitura e gravação dos pesos;
+- `index.html` e `pages/`: versão estática publicada no GitHub Pages;
 - `data/plots.json`: cadastro das parcelas;
 - `db/schema.ts`: tabela de pesagens;
 - `drizzle/`: migrações do banco.

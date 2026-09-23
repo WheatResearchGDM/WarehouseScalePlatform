@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b4b33" />
+    <meta
+      name="description"
+      content="Leitura de parcelas, registro de PW e acompanhamento dos ensaios de trigo."
+    />
+    <link rel="icon" href="public/favicon.svg" />
+    <link rel="stylesheet" href="pages/styles.css" />
+    <title>Pesagem de Ensaios | GDM</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar__inner">
+        <div class="brand">
+          <div class="brand__mark" aria-hidden="true">G</div>
+          <div>
+            <div class="brand__line"><strong>GDM</strong><span>Pesquisa &amp; Desenvolvimento</span></div>
+            <p>Pesagem de ensaios de trigo</p>
+          </div>
+        </div>
+        <div class="overall overall--header" aria-label="Avanço geral">
+          <div><small>Avanço geral</small><strong id="header-count">0 de 0</strong></div>
+          <span id="header-percent">0%</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="main-column">
+        <article class="panel scan-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">⌁ Leitura da parcela</p>
+              <h1>Bipe o código para começar</h1>
+            </div>
+            <span class="device-status"><i></i> Salvo neste aparelho</span>
+          </div>
+
+          <form id="scan-form" class="scan-form">
+            <label>
+              <span>Identificador</span>
+              <select id="scan-mode" aria-label="Tipo de código">
+                <option value="feid">FEID da parcela</option>
+                <option value="uuid">UUID da parcela</option>
+              </select>
+            </label>
+            <label>
+              <span>Código lido</span>
+              <div class="input-with-icon"><b aria-hidden="true">▥</b><input id="scan-value" autocomplete="off" spellcheck="false" placeholder="Leia ou digite o FEID" autofocus /></div>
+            </label>
+            <button class="primary-button" type="submit">Conferir</button>
+          </form>
+          <p class="hint">O leitor envia o código como teclado. Mantenha este campo selecionado e finalize a leitura com Enter.</p>
+          <div id="scan-error" class="alert" role="alert" hidden></div>
+        </article>
+
+        <article id="plot-card" class="panel plot-card" hidden>
+          <div class="plot-card__hero">
+            <div class="plot-card__badges">
+              <span class="found-badge">✓ Parcela encontrada</span>
+              <span id="existing-badge" class="existing-badge" hidden></span>
+            </div>
+            <div class="plot-card__titles">
+              <div>
+                <p class="field-label">Entity name</p>
+                <h2 id="entity-name"></h2>
+                <p class="field-label field-label--spaced">(OBS) Name</p>
+                <p id="obs-name" class="obs-name"></p>
+              </div>
+              <div class="ger-card">
+                <p class="field-label">(GER) Name</p>
+                <strong id="ger-name"></strong>
+                <p id="location"></p>
+              </div>
+            </div>
+          </div>
+
+          <div class="plot-card__body">
+            <dl class="details-grid">
+              <div><dt>Block</dt><dd id="block"></dd></div>
+              <div><dt>Entry code</dt><dd id="entry-code"></dd></div>
+              <div><dt>Row</dt><dd id="row"></dd></div>
+              <div><dt>Column</dt><dd id="column"></dd></div>
+              <div class="identifiers"><dt>Identificadores</dt><dd><span><b>FEID:</b> <i id="feid"></i></span><span><b>UUID:</b> <i id="uuid"></i></span></dd></div>
+            </dl>
+
+            <form id="weight-form" class="weight-form">
+              <label for="plot-weight">⚖ Peso da parcela (PW)</label>
+              <input id="plot-weight" inputmode="decimal" autocomplete="off" placeholder="0,000" />
+              <button id="save-button" type="submit">✓ Salvar PW</button>
+            </form>
+          </div>
+        </article>
+
+        <section id="empty-state" class="empty-state">
+          <div class="empty-state__icon" aria-hidden="true">⚖</div>
+          <h2>Aguardando leitura</h2>
+          <p>Os dados da parcela aparecerão aqui para conferência antes de registrar o peso.</p>
+          <p id="last-saved" class="last-saved" hidden></p>
+        </section>
+      </section>
+
+      <aside class="panel report-panel">
+        <div class="report-heading">
+          <div><p class="eyebrow">◴ Relatório em tempo real</p><h2>Avanço por ensaio</h2></div>
+          <span class="live-badge"><i></i> Ao vivo</span>
+        </div>
+        <div class="overall-card">
+          <div class="overall-card__line">
+            <div><small>Total concluído</small><strong id="overall-percent">0%</strong></div>
+            <p><b id="overall-completed">0</b> pesadas<br /><span id="overall-remaining">0</span> faltam</p>
+          </div>
+          <div class="progress"><span id="overall-progress"></span></div>
+        </div>
+        <div id="trial-list" class="trial-list"></div>
+        <p class="storage-note">Atualização imediata · dados salvos neste navegador</p>
+      </aside>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <script src="pages/app.js" defer></script>
+  </body>
+</html>
