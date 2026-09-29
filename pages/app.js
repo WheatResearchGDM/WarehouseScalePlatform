@@ -2,10 +2,13 @@
   "use strict";
 
   const STORAGE_KEY = "gdm-warehouse-scale-weights-v1";
+  const PLOTS_STORAGE_KEY = "gdm-warehouse-scale-plots-v1";
+  const SCALE_EXPONENT_KEY = "gdm-warehouse-scale-exponent-v1";
   const state = {
     plots: [], selected: null, weights: loadWeights(),
     serialPort: null, serialReader: null, readLoop: null, keepReading: false,
-    serialBuffer: "", serialFlushTimer: null,
+    serialBuffer: "", serialFlushTimer: null, rawScaleWeight: null,
+    scaleExponent: loadScaleExponent(), datasetName: "modelo incorporado",
   };
   const byFeid = new Map();
   const byUuid = new Map();
@@ -18,7 +21,8 @@
     saveButton: $("save-button"), existingBadge: $("existing-badge"), toast: $("toast"),
     trialList: $("trial-list"), exportCsv: $("export-csv"), exportCount: $("export-count"),
     recentList: $("recent-list"), recentEmpty: $("recent-empty"),
-    connectScale: $("connect-scale"), baudRate: $("baud-rate"), scaleStatus: $("scale-status"),
+    importExcel: $("import-excel"), excelFile: $("excel-file"), datasetNote: $("dataset-note"),
+    connectScale: $("connect-scale"), baudRate: $("baud-rate"), scaleFactor: $("scale-factor"), scaleStatus: $("scale-status"),
     scaleWeight: $("scale-weight"), scaleReadingNote: $("scale-reading-note"), serialHelp: $("serial-help"),
   };
 
@@ -31,6 +35,18 @@
 
   function persistWeights() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state.weights));
+  }
+
+  function loadScaleExponent() {
+    const value = Number(localStorage.getItem(SCALE_EXPONENT_KEY) || 0);
+    return Number.isInteger(value) && value >= 0 && value <= 6 ? value : 0;
+  }
+
+  function loadImportedDataset() {
+    try {
+      const value = JSON.parse(localStorage.getItem(PLOTS_STORAGE_KEY) || "null");
+      return value && Array.isArray(value.plots) && value.plots.length ? value : null;
+    } catch { return null; }
   }
 
   function normalize(value) { return String(value || "").trim().toUpperCase(); }
@@ -69,11 +85,14 @@
     return Number.isFinite(value) && value >= 0 ? value : null;
   }
 
-  function applyScaleWeight(value, rawLine) {
+  function applyScaleWeight(rawValue, rawLine) {
+    state.rawScaleWeight = rawValue;
+    const value = rawValue / (10 ** state.scaleExponent);
     refs.scaleWeight.textContent = formatNumber(value);
     refs.scaleWeight.classList.add("is-live");
-    refs.scaleReadingNote.textContent = state.selected ? "PW preenchido automaticamente" : "Bipe uma parcela para aplicar";
-    refs.scaleWeight.title = String(rawLine || "").trim();
+    const factor = state.scaleExponent ? ` · ÷ 10^${state.scaleExponent}` : "";
+    refs.scaleReadingNote.textContent = state.selected ? `PW preenchido automaticamente${factor}` : `Bipe uma parcela para aplicar${factor}`;
+    refs.scaleWeight.title = `Leitura bruta: ${formatNumber(rawValue)}${rawLine ? ` (${String(rawLine).trim()})` : ""}`;
     if (state.selected) refs.weight.value = String(value).replace(".", ",");
   }
 
@@ -122,6 +141,7 @@
     refs.baudRate.disabled = connected;
     refs.scaleStatus.textContent = label;
     if (!connected) {
+      state.rawScaleWeight = null;
       refs.scaleWeight.textContent = "—";
       refs.scaleWeight.classList.remove("is-live");
       refs.scaleReadingNote.textContent = "Aguardando conexão";
@@ -289,7 +309,7 @@
 
   function renderRecentWeights() {
     const recent = Object.values(state.weights)
-      .filter((record) => record && Number.isFinite(Number(record.weight)))
+      .filter((record) => record && Number.isFinite(Number(record.weight)) && byUuid.has(normalize(record.uuid)))
       .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime())
       .slice(0, 10);
 
@@ -304,6 +324,48 @@
         <div class="recent-item__weight"><small>PW</small><strong>${escapeHtml(formatNumber(Number(record.weight)))}</strong></div>
         <time datetime="${escapeHtml(record.updatedAt || "")}">${escapeHtml(formatDateTime(record.updatedAt))}</time>
       </article>`).join("");
+  }
+
+  function activatePlots(plots, datasetName, persist = false) {
+    state.plots = plots;
+    state.datasetName = datasetName || "planilha importada";
+    byFeid.clear();
+    byUuid.clear();
+    for (const plot of plots) {
+      byFeid.set(normalize(plot.feid), plot);
+      byUuid.set(normalize(plot.uuid), plot);
+    }
+    clearSelection();
+    renderProgress();
+    refs.datasetNote.textContent = `Base atual: ${state.datasetName} · ${plots.length} parcelas`;
+
+    if (persist) {
+      try {
+        localStorage.setItem(PLOTS_STORAGE_KEY, JSON.stringify({ fileName: state.datasetName, plots }));
+      } catch {
+        showToast("A planilha foi carregada, mas é grande demais para permanecer salva após fechar o navegador.", true);
+      }
+    }
+  }
+
+  async function importExcelFile(file) {
+    if (!window.GdmPlotImport?.parseExcelFile) {
+      showToast("O leitor de Excel não foi carregado. Atualize a página.", true);
+      return;
+    }
+    refs.importExcel.disabled = true;
+    refs.importExcel.textContent = "Importando…";
+    try {
+      const result = await window.GdmPlotImport.parseExcelFile(file);
+      activatePlots(result.plots, result.fileName, true);
+      showToast(`${result.plots.length} parcelas importadas de ${result.fileName}.`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Não foi possível importar a planilha.", true);
+    } finally {
+      refs.importExcel.disabled = false;
+      refs.importExcel.textContent = "⇧ Importar Excel";
+      refs.excelFile.value = "";
+    }
   }
 
   function saveCurrentWeight() {
@@ -329,6 +391,10 @@
 
   refs.scanForm.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!state.plots.length) {
+      showToast("Importe uma planilha Excel antes de iniciar a pesagem.", true);
+      return;
+    }
     const code = normalize(refs.scanValue.value);
     const selectedCode = state.selected
       ? normalize(refs.scanMode.value === "uuid" ? state.selected.uuid : state.selected.feid)
@@ -362,6 +428,22 @@
     saveCurrentWeight();
   });
 
+  refs.scaleFactor.value = String(state.scaleExponent);
+  refs.scaleFactor.addEventListener("change", () => {
+    state.scaleExponent = Number(refs.scaleFactor.value);
+    localStorage.setItem(SCALE_EXPONENT_KEY, String(state.scaleExponent));
+    if (state.rawScaleWeight !== null) applyScaleWeight(state.rawScaleWeight, "");
+    showToast(state.scaleExponent
+      ? `Fator de escala aplicado: leitura ÷ 10^${state.scaleExponent}.`
+      : "Fator de escala removido: leitura sem divisão.");
+  });
+
+  refs.importExcel.title = `Cabeçalhos obrigatórios: ${window.GdmPlotImport?.requiredHeaders?.join(", ") || "template GDM"}`;
+  refs.importExcel.addEventListener("click", () => refs.excelFile.click());
+  refs.excelFile.addEventListener("change", () => {
+    const [file] = refs.excelFile.files || [];
+    if (file) void importExcelFile(file);
+  });
   refs.connectScale.addEventListener("click", () => void toggleScaleConnection());
   refs.exportCsv.addEventListener("click", exportCsv);
 
@@ -383,22 +465,12 @@
     if (state.selected) selectPlot(state.selected);
   });
 
-  fetch("data/plots.json", { cache: "no-store" })
-    .then((response) => {
-      if (!response.ok) throw new Error("Base de parcelas indisponível.");
-      return response.json();
-    })
-    .then((plots) => {
-      state.plots = plots;
-      for (const plot of plots) {
-        byFeid.set(normalize(plot.feid), plot);
-        byUuid.set(normalize(plot.uuid), plot);
-      }
-      renderProgress();
-      refs.scanValue.focus();
-    })
-    .catch((error) => {
-      showScanError(error.message || "Falha ao carregar a base de parcelas.");
-      showToast("Falha ao carregar a base de parcelas.", true);
-    });
+  const importedDataset = loadImportedDataset();
+  if (importedDataset) {
+    activatePlots(importedDataset.plots, importedDataset.fileName || "planilha importada");
+    refs.scanValue.focus();
+  } else {
+    activatePlots([], "nenhuma planilha carregada");
+    refs.scanValue.focus();
+  }
 })();

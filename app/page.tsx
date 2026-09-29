@@ -13,8 +13,9 @@ import {
   MapPin,
   Scale,
   ScanLine,
+  Upload,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -22,9 +23,24 @@ import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Progress } from "@/components/ui/progress";
 import { Toaster } from "@/components/ui/sonner";
-import plots from "@/data/plots.json";
-
-type Plot = (typeof plots)[number];
+type Plot = {
+  id: string;
+  feid: string;
+  uuid: string;
+  entityName: string;
+  trialType: string;
+  site: string;
+  location: string;
+  row: string;
+  column: string;
+  entryCode: string;
+  block: string;
+  obsName: string;
+  gid: string;
+  gerName: string;
+  initialPlot: number;
+  finalPlot: number;
+};
 type ScanMode = "feid" | "uuid";
 type WeightRecord = {
   uuid: string;
@@ -61,8 +77,49 @@ type ModelContext = {
   registerTool(tool: ModelTool, options?: { signal?: AbortSignal }): void | Promise<void>;
 };
 
-const byFeid = new Map(plots.map((plot) => [plot.feid.toUpperCase(), plot]));
-const byUuid = new Map(plots.map((plot) => [plot.uuid.toUpperCase(), plot]));
+type PlotImportApi = {
+  parseExcelFile(file: File): Promise<{ plots: Plot[]; fileName: string; sheetName: string }>;
+  requiredHeaders: string[];
+};
+
+declare global {
+  interface Window {
+    GdmPlotImport?: PlotImportApi;
+    XLSX?: unknown;
+  }
+}
+
+const PLOTS_STORAGE_KEY = "gdm-warehouse-scale-plots-v1";
+const SCALE_EXPONENT_KEY = "gdm-warehouse-scale-exponent-v1";
+
+function loadBrowserScript(src: string, id: string) {
+  return new Promise<void>((resolve, reject) => {
+    const existing = document.getElementById(id) as HTMLScriptElement | null;
+    if (existing?.dataset.loaded === "true") {
+      resolve();
+      return;
+    }
+    const script = existing ?? document.createElement("script");
+    script.id = id;
+    script.addEventListener("load", () => {
+      script.dataset.loaded = "true";
+      resolve();
+    }, { once: true });
+    script.addEventListener("error", () => reject(new Error("Não foi possível carregar o leitor de Excel.")), { once: true });
+    if (!existing) {
+      script.src = src;
+      document.head.appendChild(script);
+    }
+  });
+}
+
+async function loadPlotImporter() {
+  if (window.GdmPlotImport) return window.GdmPlotImport;
+  await loadBrowserScript("/vendor/xlsx.full.min.js", "gdm-xlsx-runtime");
+  await loadBrowserScript("/plot-import.js", "gdm-plot-import-runtime");
+  if (!window.GdmPlotImport) throw new Error("O leitor de Excel não foi inicializado.");
+  return window.GdmPlotImport;
+}
 
 function parseWeight(value: string) {
   return Number(value.trim().replace(",", "."));
@@ -97,6 +154,9 @@ function csvCell(value: unknown) {
 }
 
 export default function Home() {
+  const [plotData, setPlotData] = useState<Plot[]>([]);
+  const [datasetName, setDatasetName] = useState("nenhuma planilha carregada");
+  const [importing, setImporting] = useState(false);
   const [scanMode, setScanMode] = useState<ScanMode>("feid");
   const [scanValue, setScanValue] = useState("");
   const [selected, setSelected] = useState<Plot | null>(null);
@@ -110,6 +170,9 @@ export default function Home() {
   const [scaleConnected, setScaleConnected] = useState(false);
   const [scaleStatus, setScaleStatus] = useState("Não conectada");
   const [scaleWeight, setScaleWeight] = useState<number | null>(null);
+  const [rawScaleWeight, setRawScaleWeight] = useState<number | null>(null);
+  const [scaleExponent, setScaleExponent] = useState("0");
+  const excelFileRef = useRef<HTMLInputElement>(null);
   const scanRef = useRef<HTMLInputElement>(null);
   const weightRef = useRef<HTMLInputElement>(null);
   const weightsRef = useRef<WeightRecord[]>([]);
@@ -120,6 +183,16 @@ export default function Home() {
   const serialKeepReadingRef = useRef(false);
   const serialBufferRef = useRef("");
   const serialFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scaleExponentRef = useRef(0);
+
+  const byFeid = useMemo(
+    () => new Map(plotData.map((plot) => [plot.feid.toUpperCase(), plot])),
+    [plotData],
+  );
+  const byUuid = useMemo(
+    () => new Map(plotData.map((plot) => [plot.uuid.toUpperCase(), plot])),
+    [plotData],
+  );
 
   const weightsByUuid = useMemo(
     () => new Map(weights.map((item) => [item.uuid.toUpperCase(), item])),
@@ -128,9 +201,10 @@ export default function Home() {
 
   const recentWeights = useMemo(
     () => [...weights]
+      .filter((item) => byUuid.has(item.uuid.toUpperCase()))
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
       .slice(0, 10),
-    [weights],
+    [byUuid, weights],
   );
 
   useEffect(() => {
@@ -140,6 +214,23 @@ export default function Home() {
   useEffect(() => {
     selectedRef.current = selected;
   }, [selected]);
+
+  useEffect(() => {
+    const storedExponent = Number(localStorage.getItem(SCALE_EXPONENT_KEY) || 0);
+    if (Number.isInteger(storedExponent) && storedExponent >= 0 && storedExponent <= 6) {
+      scaleExponentRef.current = storedExponent;
+      setScaleExponent(String(storedExponent));
+    }
+    try {
+      const stored = JSON.parse(localStorage.getItem(PLOTS_STORAGE_KEY) || "null") as { fileName?: string; plots?: Plot[] } | null;
+      if (stored?.plots?.length) {
+        setPlotData(stored.plots);
+        setDatasetName(stored.fileName || "planilha importada");
+      }
+    } catch {
+      localStorage.removeItem(PLOTS_STORAGE_KEY);
+    }
+  }, []);
 
   const refreshWeights = useCallback(async (quiet = false) => {
     try {
@@ -167,7 +258,7 @@ export default function Home() {
   const findPlot = useCallback((mode: ScanMode, rawCode: string) => {
     const code = rawCode.trim().toUpperCase();
     return mode === "feid" ? byFeid.get(code) : byUuid.get(code);
-  }, []);
+  }, [byFeid, byUuid]);
 
   const selectPlot = useCallback(
     (plot: Plot) => {
@@ -187,7 +278,13 @@ export default function Home() {
     const response = await fetch("/api/weights", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ uuid: plot.uuid, weight }),
+      body: JSON.stringify({
+        uuid: plot.uuid,
+        feid: plot.feid,
+        entityName: plot.entityName,
+        obsName: plot.obsName,
+        weight,
+      }),
     });
     const payload = (await response.json()) as { weight?: WeightRecord; error?: string };
     if (!response.ok || !payload.weight) {
@@ -199,7 +296,9 @@ export default function Home() {
     return saved;
   }, []);
 
-  const applyScaleWeight = useCallback((value: number) => {
+  const applyScaleWeight = useCallback((rawValue: number) => {
+    const value = rawValue / (10 ** scaleExponentRef.current);
+    setRawScaleWeight(rawValue);
     setScaleWeight(value);
     if (selectedRef.current) setWeightValue(String(value).replace(".", ","));
   }, []);
@@ -232,6 +331,7 @@ export default function Home() {
     serialBufferRef.current = "";
     setScaleConnected(false);
     setScaleStatus("Não conectada");
+    setRawScaleWeight(null);
     setScaleWeight(null);
     if (!quiet) toast.success("Balança desconectada.");
   }, []);
@@ -374,10 +474,54 @@ export default function Home() {
     ).catch(report);
 
     return () => lifecycle.abort();
-  }, [findPlot, persistWeight, selectPlot]);
+  }, [byUuid, findPlot, persistWeight, selectPlot]);
+
+  function changeScaleExponent(value: string) {
+    scaleExponentRef.current = Number(value);
+    setScaleExponent(value);
+    localStorage.setItem(SCALE_EXPONENT_KEY, value);
+    if (rawScaleWeight !== null) {
+      const scaled = rawScaleWeight / (10 ** Number(value));
+      setScaleWeight(scaled);
+      if (selectedRef.current) setWeightValue(String(scaled).replace(".", ","));
+    }
+    toast.success(value === "0" ? "Leitura sem divisão." : `Fator de escala aplicado: leitura ÷ 10^${value}.`);
+  }
+
+  async function handleExcelChange(event: ChangeEvent<HTMLInputElement>) {
+    const [file] = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (!file) return;
+
+    setImporting(true);
+    try {
+      const importer = await loadPlotImporter();
+      const result = await importer.parseExcelFile(file);
+      setPlotData(result.plots);
+      setDatasetName(result.fileName);
+      setSelected(null);
+      setScanValue("");
+      setWeightValue("");
+      try {
+        localStorage.setItem(PLOTS_STORAGE_KEY, JSON.stringify({ fileName: result.fileName, plots: result.plots }));
+      } catch {
+        toast.warning("A planilha foi carregada, mas é grande demais para permanecer salva após fechar o navegador.");
+      }
+      toast.success(`${result.plots.length} parcelas importadas de ${result.fileName}.`);
+      window.setTimeout(() => scanRef.current?.focus(), 0);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível importar a planilha.");
+    } finally {
+      setImporting(false);
+    }
+  }
 
   function handleScan(event: FormEvent) {
     event.preventDefault();
+    if (!plotData.length) {
+      toast.error("Importe uma planilha Excel antes de iniciar a pesagem.");
+      return;
+    }
     const code = scanValue.trim().toUpperCase();
     const selectedCode = selected
       ? (scanMode === "feid" ? selected.feid : selected.uuid).toUpperCase()
@@ -430,7 +574,7 @@ export default function Home() {
   }
 
   function exportCsv() {
-    const rows = plots
+    const rows = plotData
       .map((plot) => ({ plot, record: weightsByUuid.get(plot.uuid.toUpperCase()) }))
       .filter((item): item is { plot: Plot; record: WeightRecord } => Boolean(item.record));
     if (!rows.length) {
@@ -458,7 +602,7 @@ export default function Home() {
 
   const trials = useMemo(() => {
     const grouped = new Map<string, Plot[]>();
-    for (const plot of plots) {
+    for (const plot of plotData) {
       grouped.set(plot.entityName, [...(grouped.get(plot.entityName) ?? []), plot]);
     }
     return Array.from(grouped.entries()).map(([entityName, items]) => {
@@ -479,7 +623,7 @@ export default function Home() {
         percent: total ? Math.round((completed / total) * 100) : 0,
       };
     });
-  }, [weightsByUuid]);
+  }, [plotData, weightsByUuid]);
 
   const totalPlots = trials.reduce((sum, trial) => sum + trial.total, 0);
   const totalCompleted = trials.reduce((sum, trial) => sum + trial.completed, 0);
@@ -525,6 +669,10 @@ export default function Home() {
                 </h1>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2">
+                <input ref={excelFileRef} type="file" accept=".xlsx,.xls" onChange={(event) => void handleExcelChange(event)} className="hidden" />
+                <Button type="button" disabled={importing} onClick={() => excelFileRef.current?.click()} className="h-9 rounded-[5px] border border-[#547fa6] bg-[#eaf3fb] px-3 text-sm font-bold text-[#285882] hover:bg-[#dceaf6]">
+                  {importing ? <LoaderCircle className="size-4 animate-spin" /> : <Upload className="size-4" />} {importing ? "Importando…" : "Importar Excel"}
+                </Button>
                 <Button type="button" onClick={exportCsv} className="h-9 rounded-[5px] bg-[#c88918] px-3 text-sm font-bold text-white hover:bg-[#b77710]">
                   <Download className="size-4" /> Exportar CSV ({totalCompleted})
                 </Button>
@@ -535,7 +683,9 @@ export default function Home() {
               </div>
             </div>
 
-            <section className="mb-2 grid gap-3 rounded-[5px] border border-[#cbdcec] border-l-4 border-l-[#78a9d8] bg-[#eaf2f9] p-3.5 md:grid-cols-[minmax(190px,.8fr)_minmax(300px,1.2fr)_minmax(145px,.55fr)] md:items-center">
+            <p className="mb-3 text-xs font-semibold text-[#60768d]">Base atual: {datasetName} · {plotData.length} parcelas</p>
+
+            <section className="mb-2 grid gap-3 rounded-[5px] border border-[#cbdcec] border-l-4 border-l-[#78a9d8] bg-[#eaf2f9] p-3.5 xl:grid-cols-[minmax(150px,.7fr)_minmax(330px,1.6fr)_minmax(110px,.5fr)] xl:items-center">
               <div className="flex items-center gap-3">
                 <div className="grid size-11 shrink-0 place-items-center rounded-[5px] bg-[#d6e6f3] text-[#25537f]"><Cable className="size-5" /></div>
                 <div className="min-w-0">
@@ -543,21 +693,28 @@ export default function Home() {
                   <p className="truncate text-xs text-[#60768d]" title={scaleStatus}>{scaleStatus}</p>
                 </div>
               </div>
-              <div className="grid grid-cols-[minmax(130px,.72fr)_minmax(150px,1fr)] items-end gap-2">
+              <div className="grid items-end gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(95px,.72fr)_minmax(105px,.72fr)_minmax(125px,1fr)]">
                 <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">
                   Velocidade
                   <NativeSelect value={baudRate} onChange={(event) => setBaudRate(event.target.value)} disabled={scaleConnected} className="mt-1 h-10 w-full rounded-[5px] border-[#cbdcec] bg-white px-2 text-sm font-bold normal-case tracking-normal text-[#173a61]">
                     {[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200].map((rate) => <NativeSelectOption key={rate} value={String(rate)}>{rate} baud</NativeSelectOption>)}
                   </NativeSelect>
                 </label>
-                <Button type="button" onClick={() => void toggleScaleConnection()} className={`h-10 rounded-[5px] text-sm font-extrabold ${scaleConnected ? "bg-[#d63b38] hover:bg-[#b92f2d]" : "bg-[#1f4269] hover:bg-[#173754]"}`}>
+                <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">
+                  Fator de escala
+                  <NativeSelect value={scaleExponent} onChange={(event) => changeScaleExponent(event.target.value)} title="Divisor aplicado à leitura bruta da balança" className="mt-1 h-10 w-full rounded-[5px] border-[#cbdcec] bg-white px-2 text-sm font-bold normal-case tracking-normal text-[#173a61]">
+                    <NativeSelectOption value="0">÷ 10⁰</NativeSelectOption>
+                    {[1, 2, 3, 4, 5, 6].map((exponent) => <NativeSelectOption key={exponent} value={String(exponent)}>÷ 10{["", "¹", "²", "³", "⁴", "⁵", "⁶"][exponent]}</NativeSelectOption>)}
+                  </NativeSelect>
+                </label>
+                <Button type="button" onClick={() => void toggleScaleConnection()} className={`h-10 rounded-[5px] text-sm font-extrabold sm:col-span-2 xl:col-span-1 ${scaleConnected ? "bg-[#d63b38] hover:bg-[#b92f2d]" : "bg-[#1f4269] hover:bg-[#173754]"}`}>
                   {scaleConnected ? "Desconectar" : "Conectar balança"}
                 </Button>
               </div>
-              <div className="border-t border-[#d5dfd0] pt-2 md:border-l md:border-t-0 md:pl-4 md:pt-0">
+              <div className="border-t border-[#d5dfd0] pt-2 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0">
                 <p className="text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">Leitura atual</p>
                 <p className={`text-3xl font-black leading-none tracking-[-.02em] ${scaleWeight === null ? "text-[#173a61]" : "text-[#237a63]"}`}>{scaleWeight === null ? "—" : formatNumber(scaleWeight)}</p>
-                <p className="mt-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">{scaleConnected ? (selected ? "PW preenchido automaticamente" : "Bipe uma parcela para aplicar") : "Aguardando conexão"}</p>
+                <p className="mt-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">{scaleConnected ? `${selected ? "PW preenchido automaticamente" : "Bipe uma parcela para aplicar"}${scaleExponent === "0" ? "" : ` · ÷ 10^${scaleExponent}`}` : "Aguardando conexão"}</p>
               </div>
             </section>
             <p className="mb-4 text-xs text-[#647a90]">Conecte a balança, selecione FEID ou UUID e bipe a parcela para preencher o PW automaticamente.</p>

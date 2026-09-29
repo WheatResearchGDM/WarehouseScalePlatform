@@ -38,10 +38,14 @@
               <h1>Leitura da parcela</h1>
             </div>
             <div class="panel-actions">
+              <button id="import-excel" class="import-button" type="button">⇧ Importar Excel</button>
+              <input id="excel-file" type="file" accept=".xlsx,.xls" hidden />
               <button id="export-csv" class="outline-button" type="button">⇩ Exportar CSV <span id="export-count">(0)</span></button>
-              <span class="device-status"><i></i> Salvo neste aparelho</span>
+              <span class="device-status"><i></i> Dados locais</span>
             </div>
           </div>
+
+          <p id="dataset-note" class="dataset-note">Base atual: nenhuma planilha carregada · 0 parcelas</p>
 
           <section class="scale-panel" aria-labelledby="scale-title">
             <div class="scale-panel__intro">
@@ -59,6 +63,17 @@
                   <option value="38400">38400 baud</option>
                   <option value="57600">57600 baud</option>
                   <option value="115200">115200 baud</option>
+                </select>
+              </label>
+              <label for="scale-factor">Fator de escala
+                <select id="scale-factor" title="Divisor aplicado à leitura bruta da balança">
+                  <option value="0">÷ 10⁰</option>
+                  <option value="1">÷ 10¹</option>
+                  <option value="2">÷ 10²</option>
+                  <option value="3">÷ 10³</option>
+                  <option value="4">÷ 10⁴</option>
+                  <option value="5">÷ 10⁵</option>
+                  <option value="6">÷ 10⁶</option>
                 </select>
               </label>
               <button id="connect-scale" class="scale-button" type="button">Conectar balança</button>
@@ -159,6 +174,8 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <script src="public/vendor/xlsx.full.min.js" defer></script>
+    <script src="public/plot-import.js" defer></script>
     <script src="pages/app.js" defer></script>
   </body>
 </html>

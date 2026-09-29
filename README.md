@@ -20,7 +20,9 @@ na própria tela antes da conexão.
 - conferência de Entity name, (OBS) Name, Block, Entry code, Row, Column e (GER) Name;
 - registro e atualização do PW (Plot weight);
 - conexão direta com balanças pela porta COM usando Web Serial, com velocidade configurável;
+- fator de escala configurável de `10⁰` a `10⁶` para normalizar a leitura bruta da balança;
 - preenchimento automático do PW a partir da leitura serial;
+- importação de arquivos Excel `.xlsx` ou `.xls` pelo operador;
 - exportação das parcelas pesadas em CSV compatível com Excel;
 - progresso em tempo real por ensaio, calculado pelos intervalos Initial plot e Final plot;
 - interface responsiva com a identidade visual da GDM;
@@ -28,11 +30,7 @@ na própria tela antes da conexão.
 
 ## Dados
 
-A base em `data/plots.json` contém 698 parcelas distribuídas em três ensaios:
-
-- `EYT_P_K26_Ivaipora`: 510 parcelas;
-- `PRYT_P_K26_Apucarana`: 108 parcelas;
-- `VCU_P_K26_Coamo`: 80 parcelas.
+O aplicativo inicia sem uma base fixa. O operador deve importar a primeira aba de um Excel que contenha os cabeçalhos: `ID`, `FEID`, `UUID`, `Entity name`, `Trial type`, `Site`, `Location`, `Row`, `Column`, `Entry code`, `Block`, `(OBS) Name`, `GID`, `(GER) Name`, `Initial plot`, `Final plot` e `PW`. A planilha importada fica salva no navegador do equipamento.
 
 ## Desenvolvimento
 
@@ -52,6 +50,6 @@ O banco utiliza o binding D1 `DB`. Para a prévia local, aplique a migração ge
 - `app/page.tsx`: fluxo operacional e painel de progresso;
 - `app/api/weights/route.ts`: leitura e gravação dos pesos;
 - `index.html` e `pages/`: versão estática publicada no GitHub Pages;
-- `data/plots.json`: cadastro das parcelas;
+- `public/plot-import.js`: validação e transformação da planilha importada;
 - `db/schema.ts`: tabela de pesagens;
 - `drizzle/`: migrações do banco.

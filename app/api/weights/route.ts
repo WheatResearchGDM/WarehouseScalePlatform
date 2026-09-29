@@ -1,5 +1,4 @@
 import { desc } from "drizzle-orm";
-import plots from "@/data/plots.json";
 import { getDb } from "@/db";
 import { plotWeights } from "@/db/schema";
 
@@ -24,13 +23,21 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const payload = (await request.json()) as { uuid?: string; weight?: number };
+    const payload = (await request.json()) as {
+      uuid?: string;
+      feid?: string;
+      entityName?: string;
+      obsName?: string;
+      weight?: number;
+    };
     const uuid = payload.uuid?.trim().toUpperCase() ?? "";
+    const feid = payload.feid?.trim() ?? "";
+    const entityName = payload.entityName?.trim() ?? "";
+    const obsName = payload.obsName?.trim() ?? "";
     const weight = Number(payload.weight);
-    const plot = plots.find((item) => item.uuid === uuid);
 
-    if (!plot) {
-      return Response.json({ error: "Parcela não encontrada." }, { status: 404 });
+    if (!uuid || !feid || !entityName || !obsName) {
+      return Response.json({ error: "Dados da parcela incompletos." }, { status: 400 });
     }
     if (!Number.isFinite(weight) || weight <= 0) {
       return Response.json(
@@ -41,10 +48,10 @@ export async function POST(request: Request) {
 
     const updatedAt = new Date().toISOString();
     const record = {
-      uuid: plot.uuid,
-      feid: plot.feid,
-      entityName: plot.entityName,
-      obsName: plot.obsName,
+      uuid,
+      feid,
+      entityName,
+      obsName,
       weight,
       updatedAt,
     };
@@ -57,9 +64,9 @@ export async function POST(request: Request) {
         set: {
           weight,
           updatedAt,
-          feid: plot.feid,
-          entityName: plot.entityName,
-          obsName: plot.obsName,
+          feid,
+          entityName,
+          obsName,
         },
       });
 
