@@ -3,9 +3,9 @@ import { getDb } from "@/db";
 import { plotWeights } from "@/db/schema";
 
 function errorMessage(error: unknown) {
-  const message = error instanceof Error ? error.message : "Erro inesperado";
+  const message = error instanceof Error ? error.message : "Unexpected error";
   return message.includes("no such table")
-    ? "A base de pesagens ainda não está disponível."
+    ? "The weighing database is not available yet."
     : message;
 }
 
@@ -37,11 +37,11 @@ export async function POST(request: Request) {
     const weight = Number(payload.weight);
 
     if (!uuid || !feid || !entityName || !obsName) {
-      return Response.json({ error: "Dados da parcela incompletos." }, { status: 400 });
+      return Response.json({ error: "Plot data is incomplete." }, { status: 400 });
     }
     if (!Number.isFinite(weight) || weight <= 0) {
       return Response.json(
-        { error: "Informe um peso maior que zero." },
+        { error: "Enter a weight greater than zero." },
         { status: 400 },
       );
     }

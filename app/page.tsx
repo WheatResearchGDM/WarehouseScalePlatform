@@ -1,19 +1,9 @@
 "use client";
+/* eslint-disable @next/next/no-img-element */
 
 import {
-  Barcode,
-  Cable,
-  Check,
-  CircleAlert,
-  Cloud,
-  CloudOff,
-  Download,
-  Gauge,
-  LoaderCircle,
-  MapPin,
-  Scale,
-  ScanLine,
-  Upload,
+  Barcode, Cable, Check, CircleAlert, Download, Gauge, LayoutDashboard, LoaderCircle,
+  MapPin, Pencil, Plus, Scale, ScanLine, Search, Trash2, Upload,
 } from "lucide-react";
 import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -21,914 +11,494 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { Progress } from "@/components/ui/progress";
 import { Toaster } from "@/components/ui/sonner";
+
 type Plot = {
-  id: string;
-  feid: string;
-  uuid: string;
-  entityName: string;
-  trialType: string;
-  site: string;
-  location: string;
-  row: string;
-  column: string;
-  entryCode: string;
-  block: string;
-  obsName: string;
-  gid: string;
-  gerName: string;
-  initialPlot: number;
-  finalPlot: number;
+  id: string; feid: string; uuid: string; entityName: string; trialType: string; site: string;
+  location: string; row: string; column: string; entryCode: string; block: string; obsName: string;
+  gid: string; gerName: string; initialPlot: number; finalPlot: number;
 };
-type ScanMode = "feid" | "uuid";
 type WeightRecord = {
-  uuid: string;
-  feid: string;
-  entityName: string;
-  obsName: string;
-  weight: number;
-  updatedAt: string;
+  key: string; sessionId: string; uuid: string; feid: string; entityName: string; obsName: string;
+  weight: number; weighedAt: string; updatedAt: string; source: string;
 };
-
+type WeighingSession = {
+  id: string; name: string; sourceFileName: string; createdAt: string; updatedAt: string; version: number; plots: Plot[];
+};
+type ImportedWeight = { uuid: string; weight: number; weighedAt: string; source?: string };
+type ImportResult = {
+  plots: Plot[]; importedWeights: ImportedWeight[]; invalidRows: number[]; invalidWeightRows: number[];
+  fileName: string; sheetName: string;
+};
+type ProgressItem = {
+  key: string; label: string; total: number; completed: number; remaining: number; percent: number;
+  initial?: number; final?: number; trialType?: string; location?: string;
+};
+type OverallProgress = { total: number; completed: number; remaining: number; percent: number };
+type MergePlan = { ready: ImportedWeight[]; unresolved: ImportedWeight[]; ignored: number; unchanged: number; keptCurrent: number };
+type StoreApi = {
+  init(): Promise<{ database: IDBDatabase; sessions: WeighingSession[]; activeSessionId: string | null }>;
+  listSessions(database: IDBDatabase): Promise<WeighingSession[]>;
+  getSession(database: IDBDatabase, id: string | null): Promise<WeighingSession | null>;
+  createSession(database: IDBDatabase, plots: Plot[], fileName: string, name?: string, initialWeights?: ImportedWeight[]): Promise<WeighingSession>;
+  getWeights(database: IDBDatabase, sessionId: string): Promise<WeightRecord[]>;
+  saveWeight(database: IDBDatabase, sessionId: string, plot: Plot, weight: number, source?: string, weighedAt?: string): Promise<WeightRecord>;
+  saveWeights(database: IDBDatabase, sessionId: string, entries: ImportedWeight[]): Promise<WeightRecord[]>;
+  renameSession(database: IDBDatabase, id: string, name: string): Promise<WeighingSession>;
+  deleteSession(database: IDBDatabase, id: string): Promise<void>;
+  setActiveSession(database: IDBDatabase, id: string | null): Promise<void>;
+};
+type UtilsApi = {
+  normalize(value: unknown): string;
+  groupProgress(plots: Plot[], weights: WeightRecord[], key: "trial" | "location"): ProgressItem[];
+  overallProgress(plots: Plot[], weights: WeightRecord[]): OverallProgress;
+  prepareMerge(plots: Plot[], current: WeightRecord[], imported: ImportedWeight[]): MergePlan;
+  exportSession(session: WeighingSession, weights: WeightRecord[], format: "xlsx" | "csv"): number;
+};
+type ImportApi = { parseExcelFile(file: File): Promise<ImportResult> };
 type SerialPortLike = {
-  readable: ReadableStream<Uint8Array> | null;
-  open(options: { baudRate: number }): Promise<void>;
-  close(): Promise<void>;
-  getInfo?(): { usbVendorId?: number; usbProductId?: number };
+  readable: ReadableStream<Uint8Array> | null; open(options: { baudRate: number }): Promise<void>;
+  close(): Promise<void>; getInfo?(): { usbVendorId?: number; usbProductId?: number };
 };
-
 type SerialLike = {
   requestPort(): Promise<SerialPortLike>;
   addEventListener(type: "disconnect", listener: (event: Event) => void): void;
   removeEventListener(type: "disconnect", listener: (event: Event) => void): void;
 };
 
-type ModelTool = {
-  name: string;
-  title: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-  annotations?: { readOnlyHint?: boolean; untrustedContentHint?: boolean };
-  execute(input: unknown): unknown | Promise<unknown>;
-};
-
-type ModelContext = {
-  registerTool(tool: ModelTool, options?: { signal?: AbortSignal }): void | Promise<void>;
-};
-
-type PlotImportApi = {
-  parseExcelFile(file: File): Promise<{ plots: Plot[]; fileName: string; sheetName: string }>;
-  requiredHeaders: string[];
-};
-
 declare global {
-  interface Window {
-    GdmPlotImport?: PlotImportApi;
-    XLSX?: unknown;
-  }
+  interface Window { GdmWeighingStore?: StoreApi; GdmWeighingUtils?: UtilsApi; GdmPlotImport?: ImportApi; }
 }
 
-const PLOTS_STORAGE_KEY = "gdm-warehouse-scale-plots-v1";
+const PAGE_SIZE = 100;
 const SCALE_EXPONENT_KEY = "gdm-warehouse-scale-exponent-v1";
 
 function loadBrowserScript(src: string, id: string) {
   return new Promise<void>((resolve, reject) => {
     const existing = document.getElementById(id) as HTMLScriptElement | null;
-    if (existing?.dataset.loaded === "true") {
-      resolve();
-      return;
-    }
+    if (existing?.dataset.loaded === "true") { resolve(); return; }
     const script = existing ?? document.createElement("script");
     script.id = id;
-    script.addEventListener("load", () => {
-      script.dataset.loaded = "true";
-      resolve();
-    }, { once: true });
-    script.addEventListener("error", () => reject(new Error("Não foi possível carregar o leitor de Excel.")), { once: true });
-    if (!existing) {
-      script.src = src;
-      document.head.appendChild(script);
-    }
+    script.addEventListener("load", () => { script.dataset.loaded = "true"; resolve(); }, { once: true });
+    script.addEventListener("error", () => reject(new Error(`Could not load ${src}.`)), { once: true });
+    if (!existing) { script.src = src; document.head.appendChild(script); }
   });
 }
 
-async function loadPlotImporter() {
-  if (window.GdmPlotImport) return window.GdmPlotImport;
+async function loadRuntime() {
   await loadBrowserScript("/vendor/xlsx.full.min.js", "gdm-xlsx-runtime");
-  await loadBrowserScript("/plot-import.js", "gdm-plot-import-runtime");
-  if (!window.GdmPlotImport) throw new Error("O leitor de Excel não foi inicializado.");
-  return window.GdmPlotImport;
+  await loadBrowserScript("/plot-import.js", "gdm-import-runtime");
+  await loadBrowserScript("/weighing-store.js", "gdm-store-runtime");
+  await loadBrowserScript("/weighing-utils.js", "gdm-utils-runtime");
+  if (!window.GdmPlotImport || !window.GdmWeighingStore || !window.GdmWeighingUtils) throw new Error("The weighing runtime could not be initialized.");
+  return { importer: window.GdmPlotImport, store: window.GdmWeighingStore, utils: window.GdmWeighingUtils };
 }
 
-function parseWeight(value: string) {
-  return Number(value.trim().replace(",", "."));
-}
-
-function formatNumber(value: number) {
-  return new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 3 }).format(value);
-}
-
+function normalize(value: unknown) { return String(value ?? "").trim().toUpperCase(); }
+function parseWeight(value: string) { const clean = value.trim(); return clean ? Number(clean.replace(",", ".")) : Number.NaN; }
+function formatNumber(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 }).format(value); }
 function formatDateTime(value: string) {
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Horário indisponível";
-  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(date);
+  return Number.isNaN(date.getTime()) ? "Unavailable" : new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
-
-function getSerial() {
-  return (navigator as Navigator & { serial?: SerialLike }).serial;
-}
-
+function getSerial() { return (navigator as Navigator & { serial?: SerialLike }).serial; }
 function parseScaleWeight(rawLine: string) {
-  const cleaned = rawLine.replace(/\u0000/g, " ").trim();
-  if (!cleaned) return null;
-  const matches = cleaned.match(/[-+]?\d+(?:[.,]\d+)?/g);
+  const matches = rawLine.replace(/\u0000/g, " ").trim().match(/[-+]?\d+(?:[.,]\d+)?/g);
   if (!matches?.length) return null;
   const value = Number(matches[matches.length - 1].replace(",", "."));
   return Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-function csvCell(value: unknown) {
-  const text = String(value ?? "");
-  return /[;"\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+function calculateProgress(plots: Plot[], weights: WeightRecord[], grouping: "trial" | "location") {
+  const records = new Set(weights.map((item) => normalize(item.uuid)));
+  const trials = new Map<string, Plot[]>();
+  for (const plot of plots) {
+    const key = plot.entityName || "Unnamed trial";
+    trials.set(key, [...(trials.get(key) ?? []), plot]);
+  }
+  const trialItems: ProgressItem[] = Array.from(trials.entries()).map(([entityName, items]) => {
+    const initial = Math.min(...items.map((item) => item.initialPlot));
+    const final = Math.max(...items.map((item) => item.finalPlot));
+    const total = Math.max(final - initial + 1, 0);
+    const completed = items.filter((item) => records.has(normalize(item.uuid))).length;
+    return {
+      key: entityName, label: entityName, trialType: items[0]?.trialType || "—",
+      location: items[0]?.location || "Unspecified", initial, final, total, completed,
+      remaining: Math.max(total - completed, 0),
+      percent: total ? Math.min(Math.round((completed / total) * 100), 100) : 0,
+    };
+  });
+  if (grouping === "trial") return trialItems;
+  const locations = new Map<string, ProgressItem>();
+  for (const trial of trialItems) {
+    const key = trial.location || "Unspecified";
+    const current = locations.get(key) ?? { key, label: key, total: 0, completed: 0, remaining: 0, percent: 0 };
+    current.total += trial.total;
+    current.completed += trial.completed;
+    current.remaining = Math.max(current.total - current.completed, 0);
+    current.percent = current.total ? Math.min(Math.round((current.completed / current.total) * 100), 100) : 0;
+    locations.set(key, current);
+  }
+  return Array.from(locations.values());
+}
+
+function calculateOverall(plots: Plot[], weights: WeightRecord[]): OverallProgress {
+  const trials = calculateProgress(plots, weights, "trial");
+  const total = trials.reduce((sum, item) => sum + item.total, 0);
+  const completed = trials.reduce((sum, item) => sum + item.completed, 0);
+  return { total, completed, remaining: Math.max(total - completed, 0), percent: total ? Math.min(Math.round((completed / total) * 100), 100) : 0 };
+}
+
+function DonutCard({ item }: { item: ProgressItem }) {
+  return (
+    <article className="grid grid-cols-[92px_minmax(0,1fr)] items-center gap-4 rounded-lg border border-[#d3e0ec] bg-[#f8fbfe] p-4">
+      <div className="relative grid size-[92px] place-items-center rounded-full" style={{ background: `conic-gradient(#4f8fc9 ${item.percent}%, #dfe8ef 0)` }} role="img" aria-label={`${item.label}: ${item.percent}% complete`}>
+        <div className="absolute inset-3 rounded-full bg-white" />
+        <strong className="relative z-10 text-lg font-black text-[#173a61]">{item.percent}%</strong>
+      </div>
+      <div className="min-w-0">
+        <h3 className="break-words text-sm font-extrabold leading-tight text-[#173a61]">{item.label}</h3>
+        <p className="mt-2 text-xs text-[#657b90]"><strong>{item.completed}</strong> weighed · <strong>{item.remaining}</strong> pending</p>
+        {item.initial !== undefined && <p className="mt-1 text-xs text-[#657b90]">Plots {item.initial}–{item.final}</p>}
+      </div>
+    </article>
+  );
 }
 
 export default function Home() {
-  const [plotData, setPlotData] = useState<Plot[]>([]);
-  const [datasetName, setDatasetName] = useState("nenhuma planilha carregada");
+  const [database, setDatabase] = useState<IDBDatabase | null>(null);
+  const [sessions, setSessions] = useState<WeighingSession[]>([]);
+  const [session, setSession] = useState<WeighingSession | null>(null);
+  const [plots, setPlots] = useState<Plot[]>([]);
+  const [weights, setWeights] = useState<WeightRecord[]>([]);
+  const [activeTab, setActiveTab] = useState<"weighing" | "dashboard">("weighing");
+  const [loading, setLoading] = useState(true);
   const [importing, setImporting] = useState(false);
-  const [scanMode, setScanMode] = useState<ScanMode>("feid");
+  const [scanMode, setScanMode] = useState<"feid" | "uuid">("feid");
   const [scanValue, setScanValue] = useState("");
+  const [scanError, setScanError] = useState("");
   const [selected, setSelected] = useState<Plot | null>(null);
   const [weightValue, setWeightValue] = useState("");
-  const [weights, setWeights] = useState<WeightRecord[]>([]);
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [connected, setConnected] = useState(true);
-  const [scanError, setScanError] = useState("");
+  const [search, setSearch] = useState("");
+  const [trialFilter, setTrialFilter] = useState("");
+  const [locationFilter, setLocationFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [page, setPage] = useState(1);
   const [baudRate, setBaudRate] = useState("9600");
+  const [scaleExponent, setScaleExponent] = useState("0");
   const [scaleConnected, setScaleConnected] = useState(false);
-  const [scaleStatus, setScaleStatus] = useState("Não conectada");
+  const [scaleStatus, setScaleStatus] = useState("Not connected");
   const [scaleWeight, setScaleWeight] = useState<number | null>(null);
   const [rawScaleWeight, setRawScaleWeight] = useState<number | null>(null);
-  const [scaleExponent, setScaleExponent] = useState("0");
-  const excelFileRef = useRef<HTMLInputElement>(null);
+
+  const fileRef = useRef<HTMLInputElement>(null);
   const scanRef = useRef<HTMLInputElement>(null);
   const weightRef = useRef<HTMLInputElement>(null);
-  const weightsRef = useRef<WeightRecord[]>([]);
   const selectedRef = useRef<Plot | null>(null);
   const serialPortRef = useRef<SerialPortLike | null>(null);
   const serialReaderRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
-  const serialReadTaskRef = useRef<Promise<void> | null>(null);
-  const serialKeepReadingRef = useRef(false);
+  const serialTaskRef = useRef<Promise<void> | null>(null);
+  const keepReadingRef = useRef(false);
   const serialBufferRef = useRef("");
-  const serialFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const scaleExponentRef = useRef(0);
+  const serialTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const exponentRef = useRef(0);
 
-  const byFeid = useMemo(
-    () => new Map(plotData.map((plot) => [plot.feid.toUpperCase(), plot])),
-    [plotData],
-  );
-  const byUuid = useMemo(
-    () => new Map(plotData.map((plot) => [plot.uuid.toUpperCase(), plot])),
-    [plotData],
-  );
+  useEffect(() => { selectedRef.current = selected; }, [selected]);
 
-  const weightsByUuid = useMemo(
-    () => new Map(weights.map((item) => [item.uuid.toUpperCase(), item])),
-    [weights],
-  );
-
-  const recentWeights = useMemo(
-    () => [...weights]
-      .filter((item) => byUuid.has(item.uuid.toUpperCase()))
-      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-      .slice(0, 10),
-    [byUuid, weights],
-  );
-
-  useEffect(() => {
-    weightsRef.current = weights;
-  }, [weights]);
-
-  useEffect(() => {
-    selectedRef.current = selected;
-  }, [selected]);
-
-  useEffect(() => {
-    const storedExponent = Number(localStorage.getItem(SCALE_EXPONENT_KEY) || 0);
-    if (Number.isInteger(storedExponent) && storedExponent >= 0 && storedExponent <= 6) {
-      scaleExponentRef.current = storedExponent;
-      setScaleExponent(String(storedExponent));
-    }
-    try {
-      const stored = JSON.parse(localStorage.getItem(PLOTS_STORAGE_KEY) || "null") as { fileName?: string; plots?: Plot[] } | null;
-      if (stored?.plots?.length) {
-        setPlotData(stored.plots);
-        setDatasetName(stored.fileName || "planilha importada");
-      }
-    } catch {
-      localStorage.removeItem(PLOTS_STORAGE_KEY);
-    }
-  }, []);
-
-  const refreshWeights = useCallback(async (quiet = false) => {
-    try {
-      const response = await fetch("/api/weights", { cache: "no-store" });
-      const payload = (await response.json()) as { weights?: WeightRecord[]; error?: string };
-      if (!response.ok) throw new Error(payload.error ?? "Não foi possível atualizar as pesagens.");
-      setWeights(payload.weights ?? []);
-      setConnected(true);
-    } catch (error) {
-      setConnected(false);
-      if (!quiet) {
-        toast.error(error instanceof Error ? error.message : "Falha ao carregar pesagens.");
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refreshWeights();
-    const interval = window.setInterval(() => void refreshWeights(true), 5000);
-    return () => window.clearInterval(interval);
-  }, [refreshWeights]);
-
-  const findPlot = useCallback((mode: ScanMode, rawCode: string) => {
-    const code = rawCode.trim().toUpperCase();
-    return mode === "feid" ? byFeid.get(code) : byUuid.get(code);
-  }, [byFeid, byUuid]);
-
-  const selectPlot = useCallback(
-    (plot: Plot) => {
-      setSelected(plot);
-      setScanError("");
-      setScanValue("");
-      const existing = weightsRef.current.find(
-        (item) => item.uuid.toUpperCase() === plot.uuid.toUpperCase(),
-      );
-      setWeightValue(existing ? String(existing.weight).replace(".", ",") : "");
-      window.setTimeout(() => scanRef.current?.focus(), 0);
-    },
-    [],
-  );
-
-  const persistWeight = useCallback(async (plot: Plot, weight: number) => {
-    const response = await fetch("/api/weights", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        uuid: plot.uuid,
-        feid: plot.feid,
-        entityName: plot.entityName,
-        obsName: plot.obsName,
-        weight,
-      }),
+  const byFeid = useMemo(() => new Map(plots.map((plot) => [normalize(plot.feid), plot])), [plots]);
+  const byUuid = useMemo(() => new Map(plots.map((plot) => [normalize(plot.uuid), plot])), [plots]);
+  const weightsByUuid = useMemo(() => new Map(weights.map((record) => [normalize(record.uuid), record])), [weights]);
+  const overall = useMemo<OverallProgress>(() => calculateOverall(plots, weights), [plots, weights]);
+  const trialProgress = useMemo(() => calculateProgress(plots, weights, "trial"), [plots, weights]);
+  const locationProgress = useMemo(() => calculateProgress(plots, weights, "location"), [plots, weights]);
+  const recent = useMemo(() => [...weights].sort((a, b) => Date.parse(b.weighedAt || b.updatedAt) - Date.parse(a.weighedAt || a.updatedAt)).slice(0, 10), [weights]);
+  const trials = useMemo(() => [...new Set(plots.map((plot) => plot.entityName).filter(Boolean))].sort(), [plots]);
+  const locations = useMemo(() => [...new Set(plots.map((plot) => plot.location).filter(Boolean))].sort(), [plots]);
+  const filteredPlots = useMemo(() => {
+    const needle = normalize(search);
+    return plots.filter((plot) => {
+      const weighed = weightsByUuid.has(normalize(plot.uuid));
+      const haystack = normalize([plot.feid, plot.uuid, plot.obsName, plot.entityName, plot.gerName, plot.location].join(" "));
+      return (!needle || haystack.includes(needle)) && (!trialFilter || plot.entityName === trialFilter)
+        && (!locationFilter || plot.location === locationFilter) && (!statusFilter || (statusFilter === "weighed" ? weighed : !weighed));
     });
-    const payload = (await response.json()) as { weight?: WeightRecord; error?: string };
-    if (!response.ok || !payload.weight) {
-      throw new Error(payload.error ?? "Não foi possível salvar o peso.");
-    }
-    const saved = payload.weight;
-    setWeights((current) => [saved, ...current.filter((item) => item.uuid !== saved.uuid)]);
-    setConnected(true);
-    return saved;
+  }, [plots, weightsByUuid, search, trialFilter, locationFilter, statusFilter]);
+  const pageCount = Math.max(Math.ceil(filteredPlots.length / PAGE_SIZE), 1);
+  const safePage = Math.min(page, pageCount);
+  const pageRows = filteredPlots.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+  const existingWeight = selected ? weightsByUuid.get(normalize(selected.uuid)) : undefined;
+
+  const applySession = useCallback(async (db: IDBDatabase, id: string | null) => {
+    const store = window.GdmWeighingStore;
+    if (!store) throw new Error("Session storage is unavailable.");
+    const nextSession = await store.getSession(db, id);
+    const nextWeights = nextSession ? await store.getWeights(db, nextSession.id) : [];
+    setSession(nextSession); setPlots(nextSession?.plots ?? []); setWeights(nextWeights); setSelected(null);
+    setScanValue(""); setWeightValue(""); setPage(1); setSessions(await store.listSessions(db));
+    window.setTimeout(() => scanRef.current?.focus(), 0);
   }, []);
-
-  const applyScaleWeight = useCallback((rawValue: number) => {
-    const value = rawValue / (10 ** scaleExponentRef.current);
-    setRawScaleWeight(rawValue);
-    setScaleWeight(value);
-    if (selectedRef.current) setWeightValue(String(value).replace(".", ","));
-  }, []);
-
-  const consumeSerialText = useCallback((chunk: string) => {
-    serialBufferRef.current += chunk;
-    const lines = serialBufferRef.current.split(/\r\n|\n|\r/);
-    serialBufferRef.current = lines.pop() ?? "";
-    for (const line of lines) {
-      const value = parseScaleWeight(line);
-      if (value !== null) applyScaleWeight(value);
-    }
-    if (serialFlushTimerRef.current) clearTimeout(serialFlushTimerRef.current);
-    serialFlushTimerRef.current = setTimeout(() => {
-      const value = parseScaleWeight(serialBufferRef.current);
-      if (value !== null) applyScaleWeight(value);
-      serialBufferRef.current = "";
-    }, 180);
-  }, [applyScaleWeight]);
-
-  const disconnectScale = useCallback(async (quiet = false) => {
-    serialKeepReadingRef.current = false;
-    if (serialFlushTimerRef.current) clearTimeout(serialFlushTimerRef.current);
-    try { await serialReaderRef.current?.cancel(); } catch { /* reader may already be closed */ }
-    try { await serialReadTaskRef.current; } catch { /* surfaced by the read loop */ }
-    try { await serialPortRef.current?.close(); } catch { /* device may already be gone */ }
-    serialReaderRef.current = null;
-    serialReadTaskRef.current = null;
-    serialPortRef.current = null;
-    serialBufferRef.current = "";
-    setScaleConnected(false);
-    setScaleStatus("Não conectada");
-    setRawScaleWeight(null);
-    setScaleWeight(null);
-    if (!quiet) toast.success("Balança desconectada.");
-  }, []);
-
-  const toggleScaleConnection = useCallback(async () => {
-    if (serialPortRef.current) {
-      await disconnectScale();
-      return;
-    }
-    const serial = getSerial();
-    if (!serial) {
-      toast.error("Use Google Chrome ou Microsoft Edge para conectar pela porta COM.");
-      return;
-    }
-
-    try {
-      const port = await serial.requestPort();
-      await port.open({ baudRate: Number(baudRate) });
-      serialPortRef.current = port;
-      serialKeepReadingRef.current = true;
-      setScaleConnected(true);
-      const info = port.getInfo?.() ?? {};
-      const identifiers = [
-        info.usbVendorId ? `VID ${info.usbVendorId.toString(16).toUpperCase().padStart(4, "0")}` : "",
-        info.usbProductId ? `PID ${info.usbProductId.toString(16).toUpperCase().padStart(4, "0")}` : "",
-      ].filter(Boolean).join(" · ");
-      setScaleStatus(identifiers ? `Conectada · ${identifiers}` : "Conectada à porta selecionada");
-
-      serialReadTaskRef.current = (async () => {
-        const decoder = new TextDecoder();
-        try {
-          while (serialKeepReadingRef.current && port.readable) {
-            const reader = port.readable.getReader();
-            serialReaderRef.current = reader;
-            try {
-              while (serialKeepReadingRef.current) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                if (value) consumeSerialText(decoder.decode(value, { stream: true }));
-              }
-            } finally {
-              reader.releaseLock();
-              serialReaderRef.current = null;
-            }
-          }
-        } catch (error) {
-          if (serialKeepReadingRef.current) {
-            toast.error(error instanceof Error ? error.message : "A leitura da balança foi interrompida.");
-          }
-        }
-      })();
-      toast.success("Balança conectada. Aguardando leitura do peso.");
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "NotFoundError") return;
-      toast.error(error instanceof Error ? error.message : "Não foi possível conectar à balança.");
-      await disconnectScale(true);
-    }
-  }, [baudRate, consumeSerialText, disconnectScale]);
 
   useEffect(() => {
-    const serial = getSerial();
-    if (!serial) return;
-    const handleDisconnect = (event: Event) => {
-      if (event.target !== serialPortRef.current as unknown as EventTarget) return;
-      void disconnectScale(true);
-      toast.error("A balança foi desconectada do computador.");
-    };
-    serial.addEventListener("disconnect", handleDisconnect);
-    return () => {
-      serial.removeEventListener("disconnect", handleDisconnect);
-      void disconnectScale(true);
-    };
-  }, [disconnectScale]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { store } = await loadRuntime();
+        const exponent = Number(localStorage.getItem(SCALE_EXPONENT_KEY) || 0);
+        if (Number.isInteger(exponent) && exponent >= 0 && exponent <= 6) { exponentRef.current = exponent; setScaleExponent(String(exponent)); }
+        const initialized = await store.init();
+        if (cancelled) return;
+        setDatabase(initialized.database);
+        await applySession(initialized.database, initialized.activeSessionId);
+        if (initialized.sessions.some((item) => item.name === "Imported legacy session")) toast.success("Existing browser data was migrated to “Imported legacy session”.");
+      } catch (error) { toast.error(error instanceof Error ? error.message : "Could not initialize browser storage."); }
+      finally { if (!cancelled) setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [applySession]);
 
-  useEffect(() => {
-    const context = (document as Document & { modelContext?: ModelContext }).modelContext;
-    if (!context?.registerTool) return;
-
-    const lifecycle = new AbortController();
-    const report = () => undefined;
-
-    void Promise.resolve(
-      context.registerTool(
-        {
-          name: "scan_plot",
-          title: "Localizar parcela",
-          description: "Localiza e abre uma parcela pelo FEID ou UUID.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              mode: { type: "string", enum: ["feid", "uuid"] },
-              code: { type: "string" },
-            },
-            required: ["mode", "code"],
-            additionalProperties: false,
-          },
-          annotations: { readOnlyHint: false, untrustedContentHint: false },
-          execute(input) {
-            const value = input as { mode?: ScanMode; code?: string };
-            if (!value.mode || !value.code) throw new Error("mode e code são obrigatórios");
-            const plot = findPlot(value.mode, value.code);
-            if (!plot) throw new Error("Parcela não encontrada");
-            setScanMode(value.mode);
-            setScanValue(value.code);
-            selectPlot(plot);
-            return { uuid: plot.uuid, feid: plot.feid, entityName: plot.entityName, obsName: plot.obsName };
-          },
-        },
-        { signal: lifecycle.signal },
-      ),
-    ).catch(report);
-
-    void Promise.resolve(
-      context.registerTool(
-        {
-          name: "record_plot_weight",
-          title: "Registrar peso da parcela",
-          description: "Registra ou atualiza o PW de uma parcela identificada por UUID.",
-          inputSchema: {
-            type: "object",
-            properties: { uuid: { type: "string" }, weight: { type: "number", exclusiveMinimum: 0 } },
-            required: ["uuid", "weight"],
-            additionalProperties: false,
-          },
-          annotations: { readOnlyHint: false, untrustedContentHint: false },
-          async execute(input) {
-            const value = input as { uuid?: string; weight?: number };
-            const plot = value.uuid ? byUuid.get(value.uuid.trim().toUpperCase()) : undefined;
-            if (!plot || !Number.isFinite(value.weight) || Number(value.weight) <= 0) {
-              throw new Error("UUID ou peso inválido");
-            }
-            const saved = await persistWeight(plot, Number(value.weight));
-            selectPlot(plot);
-            setWeightValue(String(saved.weight).replace(".", ","));
-            return { uuid: saved.uuid, weight: saved.weight, updatedAt: saved.updatedAt };
-          },
-        },
-        { signal: lifecycle.signal },
-      ),
-    ).catch(report);
-
-    return () => lifecycle.abort();
-  }, [byUuid, findPlot, persistWeight, selectPlot]);
-
-  function changeScaleExponent(value: string) {
-    scaleExponentRef.current = Number(value);
-    setScaleExponent(value);
-    localStorage.setItem(SCALE_EXPONENT_KEY, value);
-    if (rawScaleWeight !== null) {
-      const scaled = rawScaleWeight / (10 ** Number(value));
-      setScaleWeight(scaled);
-      if (selectedRef.current) setWeightValue(String(scaled).replace(".", ","));
-    }
-    toast.success(value === "0" ? "Leitura sem divisão." : `Fator de escala aplicado: leitura ÷ 10^${value}.`);
+  async function changeSession(id: string) {
+    if (!database || !window.GdmWeighingStore) return;
+    await window.GdmWeighingStore.setActiveSession(database, id || null);
+    await applySession(database, id || null);
   }
 
-  async function handleExcelChange(event: ChangeEvent<HTMLInputElement>) {
-    const [file] = Array.from(event.target.files ?? []);
-    event.target.value = "";
-    if (!file) return;
-
+  async function handleImport(event: ChangeEvent<HTMLInputElement>) {
+    const [file] = Array.from(event.target.files ?? []); event.target.value = "";
+    if (!file || !database || !window.GdmPlotImport || !window.GdmWeighingStore || !window.GdmWeighingUtils) return;
     setImporting(true);
     try {
-      const importer = await loadPlotImporter();
-      const result = await importer.parseExcelFile(file);
-      setPlotData(result.plots);
-      setDatasetName(result.fileName);
-      setSelected(null);
-      setScanValue("");
-      setWeightValue("");
-      try {
-        localStorage.setItem(PLOTS_STORAGE_KEY, JSON.stringify({ fileName: result.fileName, plots: result.plots }));
-      } catch {
-        toast.warning("A planilha foi carregada, mas é grande demais para permanecer salva após fechar o navegador.");
+      const result = await window.GdmPlotImport.parseExcelFile(file);
+      const invalid = result.invalidRows.length + result.invalidWeightRows.length;
+      if (!session || !result.importedWeights.length) {
+        const created = await window.GdmWeighingStore.createSession(database, result.plots, result.fileName, undefined, result.importedWeights);
+        await window.GdmWeighingStore.setActiveSession(database, created.id);
+        await applySession(database, created.id);
+        toast.success(`Session created with ${result.plots.length} plots and ${result.importedWeights.length} weights${invalid ? `; ${invalid} invalid row(s) skipped` : ""}.`);
+      } else {
+        const merge = window.GdmWeighingUtils.prepareMerge(plots, weights, result.importedWeights);
+        const overwrite = merge.unresolved.length
+          ? window.confirm(`${merge.unresolved.length} conflicting weight(s) do not have comparable timestamps. Select OK to use the imported values, or Cancel to keep the current values.`)
+          : false;
+        const entries = [...merge.ready, ...(overwrite ? merge.unresolved : [])];
+        await window.GdmWeighingStore.saveWeights(database, session.id, entries);
+        await applySession(database, session.id);
+        const kept = merge.keptCurrent + (overwrite ? 0 : merge.unresolved.length);
+        toast.success(`Partial results: ${entries.length} imported, ${kept} current kept, ${merge.unchanged} unchanged, ${merge.ignored} unmatched, ${invalid} invalid.`);
       }
-      toast.success(`${result.plots.length} parcelas importadas de ${result.fileName}.`);
-      window.setTimeout(() => scanRef.current?.focus(), 0);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Não foi possível importar a planilha.");
-    } finally {
-      setImporting(false);
-    }
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Could not import the file."); }
+    finally { setImporting(false); }
   }
 
+  async function startNewSession() {
+    if (!database || !window.GdmWeighingStore) return;
+    if (!session) { fileRef.current?.click(); return; }
+    try {
+      const created = await window.GdmWeighingStore.createSession(database, plots, session.sourceFileName);
+      await window.GdmWeighingStore.setActiveSession(database, created.id);
+      await applySession(database, created.id);
+      toast.success(`New session “${created.name}” started.`);
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Could not start a new session."); }
+  }
+
+  async function renameActiveSession() {
+    if (!database || !session || !window.GdmWeighingStore) return;
+    const name = window.prompt("Enter a new name for this session:", session.name);
+    if (name === null || !name.trim() || name.trim() === session.name) return;
+    try { await window.GdmWeighingStore.renameSession(database, session.id, name); await applySession(database, session.id); toast.success("Session renamed."); }
+    catch (error) { toast.error(error instanceof Error ? error.message : "Could not rename the session."); }
+  }
+
+  async function deleteActiveSession() {
+    if (!database || !session || !window.GdmWeighingStore || !window.confirm(`Delete “${session.name}” and all of its locally saved weights? This cannot be undone.`)) return;
+    try {
+      await window.GdmWeighingStore.deleteSession(database, session.id);
+      const remaining = await window.GdmWeighingStore.listSessions(database);
+      await window.GdmWeighingStore.setActiveSession(database, remaining[0]?.id || null);
+      await applySession(database, remaining[0]?.id || null);
+      toast.success("Session deleted.");
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Could not delete the session."); }
+  }
+
+  function selectPlot(plot: Plot) {
+    setSelected(plot); setScanError(""); setScanValue("");
+    const record = weightsByUuid.get(normalize(plot.uuid));
+    setWeightValue(record ? String(record.weight) : "");
+    window.setTimeout(() => scanRef.current?.focus(), 0);
+  }
   function handleScan(event: FormEvent) {
     event.preventDefault();
-    if (!plotData.length) {
-      toast.error("Importe uma planilha Excel antes de iniciar a pesagem.");
-      return;
-    }
-    const code = scanValue.trim().toUpperCase();
-    const selectedCode = selected
-      ? (scanMode === "feid" ? selected.feid : selected.uuid).toUpperCase()
-      : "";
-
-    if (selected && (!code || code === selectedCode)) {
-      void saveCurrentWeight();
-      return;
-    }
-
-    const plot = findPlot(scanMode, scanValue);
-    if (!plot) {
-      setSelected(null);
-      setScanError(`${scanMode.toUpperCase()} não encontrado na base.`);
-      toast.error("Parcela não encontrada");
-      scanRef.current?.select();
-      return;
-    }
+    if (!session) { toast.error("Import a workbook before weighing plots."); return; }
+    const code = normalize(scanValue);
+    const currentCode = selected ? normalize(scanMode === "feid" ? selected.feid : selected.uuid) : "";
+    if (selected && (!code || code === currentCode)) { void saveCurrentWeight(); return; }
+    const plot = scanMode === "feid" ? byFeid.get(code) : byUuid.get(code);
+    if (!plot) { setSelected(null); setScanError(`${scanMode.toUpperCase()} was not found in this session.`); toast.error("Plot not found."); scanRef.current?.select(); return; }
     selectPlot(plot);
   }
-
   async function saveCurrentWeight() {
-    if (!selected || saving) return;
-    const weight = parseWeight(weightValue);
-    if (!Number.isFinite(weight) || weight <= 0) {
-      toast.error("Aguardando um peso válido da balança.");
-      weightRef.current?.focus();
-      return;
-    }
-
+    if (!database || !session || !selected || !window.GdmWeighingStore || saving) return;
+    const value = parseWeight(weightValue);
+    if (!Number.isFinite(value) || value < 0) { toast.error("Enter or wait for a valid non-negative scale weight."); weightRef.current?.focus(); return; }
     setSaving(true);
     try {
-      const saved = await persistWeight(selected, weight);
-      toast.success(`PW ${formatNumber(saved.weight)} salvo para a parcela ${selected.obsName}.`);
-      setSelected(null);
-      setScanValue("");
-      setWeightValue("");
-      window.setTimeout(() => scanRef.current?.focus(), 0);
+      const saved = await window.GdmWeighingStore.saveWeight(database, session.id, selected, value, scaleConnected ? "serial" : "manual");
+      setWeights((current) => [saved, ...current.filter((item) => normalize(item.uuid) !== normalize(saved.uuid))]);
+      setSession((current) => current ? { ...current, updatedAt: new Date().toISOString() } : current);
+      toast.success(`PW ${formatNumber(value)} saved for plot ${selected.obsName}.`);
+      setSelected(null); setScanValue(""); setWeightValue(""); window.setTimeout(() => scanRef.current?.focus(), 0);
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Could not save the weight."); }
+    finally { setSaving(false); }
+  }
+
+  function exportSession(format: "xlsx" | "csv") {
+    if (!session || !window.GdmWeighingUtils) { toast.error("Load a weighing session before exporting."); return; }
+    try { const count = window.GdmWeighingUtils.exportSession(session, weights, format); toast.success(`${count} plot records exported to ${format === "xlsx" ? "Excel" : "CSV"}.`); }
+    catch (error) { toast.error(error instanceof Error ? error.message : "Could not export the session."); }
+  }
+
+  const applyScaleWeight = useCallback((raw: number) => {
+    const value = raw / (10 ** exponentRef.current);
+    setRawScaleWeight(raw); setScaleWeight(value);
+    if (selectedRef.current) setWeightValue(String(value));
+  }, []);
+  const consumeSerial = useCallback((chunk: string) => {
+    serialBufferRef.current += chunk;
+    const lines = serialBufferRef.current.split(/\r\n|\n|\r/); serialBufferRef.current = lines.pop() ?? "";
+    for (const line of lines) { const value = parseScaleWeight(line); if (value !== null) applyScaleWeight(value); }
+    if (serialTimerRef.current) clearTimeout(serialTimerRef.current);
+    serialTimerRef.current = setTimeout(() => { const value = parseScaleWeight(serialBufferRef.current); if (value !== null) applyScaleWeight(value); serialBufferRef.current = ""; }, 180);
+  }, [applyScaleWeight]);
+  const disconnectScale = useCallback(async (quiet = false) => {
+    keepReadingRef.current = false;
+    if (serialTimerRef.current) clearTimeout(serialTimerRef.current);
+    try { await serialReaderRef.current?.cancel(); } catch { /* already closed */ }
+    try { await serialTaskRef.current; } catch { /* surfaced by reader */ }
+    try { await serialPortRef.current?.close(); } catch { /* device disconnected */ }
+    serialReaderRef.current = null; serialTaskRef.current = null; serialPortRef.current = null; serialBufferRef.current = "";
+    setScaleConnected(false); setScaleStatus("Not connected"); setScaleWeight(null); setRawScaleWeight(null);
+    if (!quiet) toast.success("Scale disconnected.");
+  }, []);
+  const toggleScale = useCallback(async () => {
+    if (serialPortRef.current) { await disconnectScale(); return; }
+    const serial = getSerial();
+    if (!serial) { toast.error("Use Google Chrome or Microsoft Edge to connect through a COM port."); return; }
+    try {
+      const port = await serial.requestPort(); await port.open({ baudRate: Number(baudRate) });
+      serialPortRef.current = port; keepReadingRef.current = true; setScaleConnected(true);
+      const info = port.getInfo?.() ?? {};
+      const identifiers = [info.usbVendorId ? `VID ${info.usbVendorId.toString(16).toUpperCase().padStart(4, "0")}` : "", info.usbProductId ? `PID ${info.usbProductId.toString(16).toUpperCase().padStart(4, "0")}` : ""].filter(Boolean).join(" · ");
+      setScaleStatus(identifiers ? `Connected · ${identifiers}` : "Connected to selected port");
+      serialTaskRef.current = (async () => {
+        const decoder = new TextDecoder();
+        try {
+          while (keepReadingRef.current && port.readable) {
+            const reader = port.readable.getReader(); serialReaderRef.current = reader;
+            try { while (keepReadingRef.current) { const { value, done } = await reader.read(); if (done) break; if (value) consumeSerial(decoder.decode(value, { stream: true })); } }
+            finally { reader.releaseLock(); serialReaderRef.current = null; }
+          }
+        } catch (error) { if (keepReadingRef.current) toast.error(error instanceof Error ? error.message : "Scale reading stopped."); }
+      })();
+      toast.success("Scale connected. Waiting for a weight reading.");
     } catch (error) {
-      setConnected(false);
-      toast.error(error instanceof Error ? error.message : "Falha ao salvar o peso.");
-    } finally {
-      setSaving(false);
+      if (!(error instanceof DOMException && error.name === "NotFoundError")) toast.error(error instanceof Error ? error.message : "Could not connect to the scale.");
+      await disconnectScale(true);
     }
+  }, [baudRate, consumeSerial, disconnectScale]);
+  useEffect(() => {
+    const serial = getSerial(); if (!serial) return;
+    const listener = (event: Event) => { if (event.target === serialPortRef.current as unknown as EventTarget) { void disconnectScale(true); toast.error("The scale was disconnected from the computer."); } };
+    serial.addEventListener("disconnect", listener);
+    return () => serial.removeEventListener("disconnect", listener);
+  }, [disconnectScale]);
+  function changeExponent(value: string) {
+    exponentRef.current = Number(value); setScaleExponent(value); localStorage.setItem(SCALE_EXPONENT_KEY, value);
+    if (rawScaleWeight !== null) applyScaleWeight(rawScaleWeight);
+    toast.success(value === "0" ? "Scale divisor removed." : `Scale divisor applied: reading ÷ 10^${value}.`);
   }
-
-  function handleSave(event: FormEvent) {
-    event.preventDefault();
-    void saveCurrentWeight();
-  }
-
-  function exportCsv() {
-    const rows = plotData
-      .map((plot) => ({ plot, record: weightsByUuid.get(plot.uuid.toUpperCase()) }))
-      .filter((item): item is { plot: Plot; record: WeightRecord } => Boolean(item.record));
-    if (!rows.length) {
-      toast.error("Ainda não há pesagens para exportar.");
-      return;
-    }
-
-    const header = ["Entity name", "(OBS) Name", "Block", "Entry code", "Row", "Column", "(GER) Name", "FEID", "UUID", "PW", "Atualizado em"];
-    const content = [header, ...rows.map(({ plot, record }) => [
-      plot.entityName, plot.obsName, plot.block, plot.entryCode, plot.row, plot.column,
-      plot.gerName, plot.feid, plot.uuid, String(record.weight).replace(".", ","), record.updatedAt,
-    ])].map((row) => row.map(csvCell).join(";")).join("\r\n");
-    const blob = new Blob(["\uFEFF", content], { type: "text/csv;charset=utf-8" });
-    const href = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    const stamp = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
-    link.href = href;
-    link.download = `pesagens-trigo_${stamp}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(href);
-    toast.success(`${rows.length} pesagem(ns) exportada(s) em CSV.`);
-  }
-
-  const trials = useMemo(() => {
-    const grouped = new Map<string, Plot[]>();
-    for (const plot of plotData) {
-      grouped.set(plot.entityName, [...(grouped.get(plot.entityName) ?? []), plot]);
-    }
-    return Array.from(grouped.entries()).map(([entityName, items]) => {
-      const initial = Math.min(...items.map((item) => item.initialPlot));
-      const final = Math.max(...items.map((item) => item.finalPlot));
-      const total = final - initial + 1;
-      const completed = items.filter((item) => weightsByUuid.has(item.uuid.toUpperCase())).length;
-      const remaining = Math.max(total - completed, 0);
-      return {
-        entityName,
-        trialType: items[0].trialType,
-        location: items[0].location,
-        initial,
-        final,
-        total,
-        completed,
-        remaining,
-        percent: total ? Math.round((completed / total) * 100) : 0,
-      };
-    });
-  }, [plotData, weightsByUuid]);
-
-  const totalPlots = trials.reduce((sum, trial) => sum + trial.total, 0);
-  const totalCompleted = trials.reduce((sum, trial) => sum + trial.completed, 0);
-  const overallPercent = totalPlots ? Math.round((totalCompleted / totalPlots) * 100) : 0;
-  const existingWeight = selected ? weightsByUuid.get(selected.uuid.toUpperCase()) : undefined;
 
   return (
-    <main className="min-h-screen bg-[#edf3f8] text-[#17365a]">
+    <main className="min-h-screen bg-[#edf3f8] pb-10 text-[#17365a]">
       <Toaster position="top-center" richColors />
-
       <header className="mx-3 mt-2 rounded-lg bg-[#1f4269] text-white shadow-[0_14px_28px_rgba(24,55,88,0.17)]">
-        <div className="mx-auto flex max-w-[1780px] items-center justify-between gap-6 px-5 py-[18px] sm:px-12">
-          <div className="flex items-center gap-3">
-            <img src="/gdm-logo.svg" alt="GDM" className="h-12 w-[68px] object-contain" />
-            <div>
-              <p className="text-[22px] font-black tracking-[-0.02em]">Pesagem de Ensaios</p>
-              <p className="text-sm text-white/75">GDM Field Operations · Trigo</p>
-            </div>
-          </div>
-
-          <div className="hidden items-center gap-4 rounded-xl bg-white/10 px-4 py-2.5 sm:flex">
-            <div className="text-right">
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-white/60">Avanço geral</p>
-              <p className="text-lg font-bold">{totalCompleted} de {totalPlots}</p>
-            </div>
-            <div className="grid size-12 place-items-center rounded-full border-4 border-[#8bb7df] text-sm font-black">
-              {overallPercent}%
-            </div>
-          </div>
+        <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-6 px-5 py-[18px] sm:px-9">
+          <div className="flex items-center gap-3"><img src="/gdm-logo.svg" alt="GDM" className="h-12 w-[68px] object-contain" /><div><p className="text-[22px] font-black tracking-[-0.02em]">Trial Weighing</p><p className="text-sm text-white/75">GDM Field Operations · Wheat</p></div></div>
+          <div className="hidden items-center gap-4 sm:flex"><div className="text-right"><p className="text-xs font-bold uppercase tracking-[.12em] text-white/60">Overall progress</p><p className="text-lg font-bold">{overall.completed} of {overall.total}</p></div><div className="grid size-13 place-items-center rounded-full border-4 border-[#8bb7df] text-sm font-black">{overall.percent}%</div></div>
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-[1500px] gap-6 px-[18px] py-6 lg:grid-cols-[minmax(0,1.32fr)_minmax(380px,.98fr)]">
-        <section className="min-w-0 space-y-5">
-          <div className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,0.08)] sm:p-6">
-            <div className="mb-4 flex flex-wrap items-start justify-between gap-4 border-b-2 border-[#d6e3ef] pb-3">
-              <div>
-                <p className="mb-1 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.1em] text-[#315b86]">
-                  <ScanLine className="size-4" /> Operação de pesagem
-                </p>
-                <h1 className="text-2xl font-extrabold tracking-[-0.02em] text-[#173a61] sm:text-[29px]">
-                  Leitura da parcela
-                </h1>
-              </div>
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <input ref={excelFileRef} type="file" accept=".xlsx,.xls" onChange={(event) => void handleExcelChange(event)} className="hidden" />
-                <Button type="button" disabled={importing} onClick={() => excelFileRef.current?.click()} className="h-9 rounded-[5px] border border-[#547fa6] bg-[#eaf3fb] px-3 text-sm font-bold text-[#285882] hover:bg-[#dceaf6]">
-                  {importing ? <LoaderCircle className="size-4 animate-spin" /> : <Upload className="size-4" />} {importing ? "Importando…" : "Importar Excel"}
-                </Button>
-                <Button type="button" onClick={exportCsv} className="h-9 rounded-[5px] bg-[#c88918] px-3 text-sm font-bold text-white hover:bg-[#b77710]">
-                  <Download className="size-4" /> Exportar CSV ({totalCompleted})
-                </Button>
-                <div className={`flex items-center gap-2 rounded-[5px] px-3 py-1.5 text-sm font-semibold ${connected ? "bg-[#eaf3fb] text-[#315f8b]" : "bg-[#fff0ed] text-[#a63a2b]"}`}>
-                  {connected ? <Cloud className="size-4" /> : <CloudOff className="size-4" />}
-                  {connected ? "Sincronizado" : "Sem conexão"}
-                </div>
+      <div className="mx-auto mt-4 flex max-w-[1500px] flex-col justify-between gap-4 px-[18px] lg:flex-row lg:items-center">
+        <nav className="flex rounded-lg border border-[#cbdcec] bg-white p-1" aria-label="Main navigation">
+          <button type="button" onClick={() => setActiveTab("weighing")} className={`flex h-10 flex-1 items-center justify-center gap-2 rounded-[5px] px-5 font-bold ${activeTab === "weighing" ? "bg-[#1f4269] text-white" : "text-[#58708a]"}`}><Scale className="size-4" /> Weighing</button>
+          <button type="button" onClick={() => setActiveTab("dashboard")} className={`flex h-10 flex-1 items-center justify-center gap-2 rounded-[5px] px-5 font-bold ${activeTab === "dashboard" ? "bg-[#1f4269] text-white" : "text-[#58708a]"}`}><LayoutDashboard className="size-4" /> Dashboard</button>
+        </nav>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <label className="text-xs font-extrabold uppercase tracking-[.08em] text-[#58708a]">Session</label>
+          <NativeSelect value={session?.id || ""} onChange={(event) => void changeSession(event.target.value)} className="h-10 max-w-[310px] rounded-[5px] border-[#bfd1e2] bg-white px-2 font-bold text-[#17365a]">
+            {!sessions.length && <NativeSelectOption value="">No active session</NativeSelectOption>}
+            {sessions.map((item) => <NativeSelectOption key={item.id} value={item.id}>{item.name}</NativeSelectOption>)}
+          </NativeSelect>
+          <Button type="button" variant="outline" disabled={!session} onClick={() => void renameActiveSession()} className="h-10 rounded-[5px]"><Pencil className="size-4" /> Rename</Button>
+          <Button type="button" variant="outline" disabled={!session} onClick={() => void deleteActiveSession()} className="h-10 rounded-[5px] text-red-700"><Trash2 className="size-4" /> Delete</Button>
+          <Button type="button" onClick={() => void startNewSession()} className="h-10 rounded-[5px] bg-[#1f4269] text-white"><Plus className="size-4" /> Start New Weighing</Button>
+        </div>
+      </div>
+
+      {activeTab === "weighing" ? (
+        <section className="mx-auto max-w-[1180px] space-y-5 px-[18px] pt-5">
+          <article className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,0.08)] sm:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-4 border-b-2 border-[#d6e3ef] pb-3">
+              <div><p className="mb-1 flex items-center gap-2 text-sm font-bold uppercase tracking-[.1em] text-[#315b86]"><ScanLine className="size-4" /> Weighing operation</p><h1 className="text-2xl font-extrabold text-[#173a61] sm:text-[29px]">Plot reading</h1></div>
+              <div className="flex flex-wrap items-center gap-2">
+                <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={(event) => void handleImport(event)} className="hidden" />
+                <Button type="button" disabled={importing || loading} onClick={() => fileRef.current?.click()} className="h-9 rounded-[5px] border border-[#547fa6] bg-[#eaf3fb] px-3 font-bold text-[#285882] hover:bg-[#dceaf6]">{importing ? <LoaderCircle className="size-4 animate-spin" /> : <Upload className="size-4" />} {importing ? "Importing…" : "Import Excel / CSV"}</Button>
+                <Button type="button" disabled={!session} onClick={() => exportSession("xlsx")} className="h-9 rounded-[5px] bg-[#c88918] px-3 font-bold text-white hover:bg-[#b77710]"><Download className="size-4" /> Export Excel</Button>
+                <Button type="button" disabled={!session} onClick={() => exportSession("csv")} className="h-9 rounded-[5px] bg-[#c88918] px-3 font-bold text-white hover:bg-[#b77710]"><Download className="size-4" /> Export CSV</Button>
               </div>
             </div>
+            <p className="mt-3 text-xs font-semibold text-[#60768d]">{session ? `Active session: ${session.name} · ${plots.length} imported plots · last changed ${formatDateTime(session.updatedAt)}` : "No weighing session loaded. Import a workbook to begin."}</p>
 
-            <p className="mb-3 text-xs font-semibold text-[#60768d]">Base atual: {datasetName} · {plotData.length} parcelas</p>
-
-            <section className="mb-2 grid gap-3 rounded-[5px] border border-[#cbdcec] border-l-4 border-l-[#78a9d8] bg-[#eaf2f9] p-3.5 xl:grid-cols-[minmax(150px,.7fr)_minmax(330px,1.6fr)_minmax(110px,.5fr)] xl:items-center">
-              <div className="flex items-center gap-3">
-                <div className="grid size-11 shrink-0 place-items-center rounded-[5px] bg-[#d6e6f3] text-[#25537f]"><Cable className="size-5" /></div>
-                <div className="min-w-0">
-                  <p className="font-extrabold text-[#173a61]">Balança serial</p>
-                  <p className="truncate text-xs text-[#60768d]" title={scaleStatus}>{scaleStatus}</p>
-                </div>
-              </div>
+            <section className="mt-3 grid gap-3 rounded-[5px] border border-[#cbdcec] border-l-4 border-l-[#78a9d8] bg-[#eaf2f9] p-3.5 xl:grid-cols-[minmax(150px,.7fr)_minmax(330px,1.6fr)_minmax(110px,.5fr)] xl:items-center">
+              <div className="flex items-center gap-3"><div className="grid size-11 place-items-center rounded-[5px] bg-[#d6e6f3] text-[#25537f]"><Cable className="size-5" /></div><div><p className="font-extrabold text-[#173a61]">Serial scale</p><p className="text-xs text-[#60768d]">{scaleStatus}</p></div></div>
               <div className="grid items-end gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(95px,.72fr)_minmax(105px,.72fr)_minmax(125px,1fr)]">
-                <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">
-                  Velocidade
-                  <NativeSelect value={baudRate} onChange={(event) => setBaudRate(event.target.value)} disabled={scaleConnected} className="mt-1 h-10 w-full rounded-[5px] border-[#cbdcec] bg-white px-2 text-sm font-bold normal-case tracking-normal text-[#173a61]">
-                    {[1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200].map((rate) => <NativeSelectOption key={rate} value={String(rate)}>{rate} baud</NativeSelectOption>)}
-                  </NativeSelect>
-                </label>
-                <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">
-                  Fator de escala
-                  <NativeSelect value={scaleExponent} onChange={(event) => changeScaleExponent(event.target.value)} title="Divisor aplicado à leitura bruta da balança" className="mt-1 h-10 w-full rounded-[5px] border-[#cbdcec] bg-white px-2 text-sm font-bold normal-case tracking-normal text-[#173a61]">
-                    <NativeSelectOption value="0">÷ 10⁰</NativeSelectOption>
-                    {[1, 2, 3, 4, 5, 6].map((exponent) => <NativeSelectOption key={exponent} value={String(exponent)}>÷ 10{["", "¹", "²", "³", "⁴", "⁵", "⁶"][exponent]}</NativeSelectOption>)}
-                  </NativeSelect>
-                </label>
-                <Button type="button" onClick={() => void toggleScaleConnection()} className={`h-10 rounded-[5px] text-sm font-extrabold sm:col-span-2 xl:col-span-1 ${scaleConnected ? "bg-[#d63b38] hover:bg-[#b92f2d]" : "bg-[#1f4269] hover:bg-[#173754]"}`}>
-                  {scaleConnected ? "Desconectar" : "Conectar balança"}
-                </Button>
+                <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">Baud rate<NativeSelect value={baudRate} onChange={(event) => setBaudRate(event.target.value)} disabled={scaleConnected} className="mt-1 h-10 w-full bg-white px-2 text-sm font-bold normal-case tracking-normal">{[1200,2400,4800,9600,19200,38400,57600,115200].map((rate) => <NativeSelectOption key={rate} value={String(rate)}>{rate} baud</NativeSelectOption>)}</NativeSelect></label>
+                <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">Scale divisor<NativeSelect value={scaleExponent} onChange={(event) => changeExponent(event.target.value)} className="mt-1 h-10 w-full bg-white px-2 text-sm font-bold normal-case tracking-normal">{[0,1,2,3,4,5,6].map((value) => <NativeSelectOption key={value} value={String(value)}>÷ 10{["⁰","¹","²","³","⁴","⁵","⁶"][value]}</NativeSelectOption>)}</NativeSelect></label>
+                <Button type="button" onClick={() => void toggleScale()} className={`h-10 rounded-[5px] font-extrabold sm:col-span-2 xl:col-span-1 ${scaleConnected ? "bg-[#d63b38]" : "bg-[#1f4269]"}`}>{scaleConnected ? "Disconnect" : "Connect scale"}</Button>
               </div>
-              <div className="border-t border-[#d5dfd0] pt-2 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0">
-                <p className="text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">Leitura atual</p>
-                <p className={`text-3xl font-black leading-none tracking-[-.02em] ${scaleWeight === null ? "text-[#173a61]" : "text-[#237a63]"}`}>{scaleWeight === null ? "—" : formatNumber(scaleWeight)}</p>
-                <p className="mt-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">{scaleConnected ? `${selected ? "PW preenchido automaticamente" : "Bipe uma parcela para aplicar"}${scaleExponent === "0" ? "" : ` · ÷ 10^${scaleExponent}`}` : "Aguardando conexão"}</p>
-              </div>
+              <div className="border-t border-[#d5dfd0] pt-2 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0"><p className="text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">Current reading</p><p className={`text-3xl font-black ${scaleWeight === null ? "text-[#173a61]" : "text-[#237a63]"}`}>{scaleWeight === null ? "—" : formatNumber(scaleWeight)}</p><p className="mt-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">{scaleConnected ? `${selected ? "PW filled automatically" : "Scan a plot to apply"}${scaleExponent === "0" ? "" : ` · ÷ 10^${scaleExponent}`}` : "Waiting for connection"}</p></div>
             </section>
-            <p className="mb-4 text-xs text-[#647a90]">Conecte a balança, selecione FEID ou UUID e bipe a parcela para preencher o PW automaticamente.</p>
+            <p className="mt-2 text-xs text-[#647a90]">Connect the scale, select FEID or UUID, then scan a plot to fill PW automatically.</p>
 
-            <form onSubmit={handleScan} className="grid gap-3 rounded-[5px] border border-[#cbdcec] bg-[#f8fbfe] p-3.5 sm:grid-cols-[190px_minmax(0,1fr)]">
-              <label className="block">
-                <span className="mb-2 block text-sm font-bold text-[#345647]">Identificador</span>
-                <NativeSelect
-                  value={scanMode}
-                  onChange={(event) => {
-                    setScanMode(event.target.value as ScanMode);
-                    setSelected(null);
-                    setScanError("");
-                    setScanValue("");
-                    window.setTimeout(() => scanRef.current?.focus(), 0);
-                  }}
-                  className="h-14 w-full rounded-[5px] border-2 border-[#d1dfed] bg-white px-4 text-base font-bold text-[#173a61]"
-                  aria-label="Tipo de código"
-                >
-                  <NativeSelectOption value="feid">FEID da parcela</NativeSelectOption>
-                  <NativeSelectOption value="uuid">UUID da parcela</NativeSelectOption>
-                </NativeSelect>
-              </label>
-
-              <label className="block">
-                <span className="mb-2 block text-sm font-bold text-[#345647]">Código lido</span>
-                <div className="relative">
-                  <Barcode className="pointer-events-none absolute left-4 top-1/2 size-6 -translate-y-1/2 text-[#6e94b9]" />
-                  <Input
-                    ref={scanRef}
-                    autoFocus
-                    value={scanValue}
-                    onChange={(event) => setScanValue(event.target.value)}
-                    className="h-14 rounded-[5px] border-2 border-[#d1dfed] bg-white pl-13 pr-4 font-mono text-lg font-semibold tracking-wide text-[#173a61] focus-visible:border-[#7fa9d2] focus-visible:ring-[#669dcf]/20"
-                    placeholder={scanMode === "feid" ? "Leia ou digite o FEID" : "Leia ou digite o UUID"}
-                    autoComplete="off"
-                    spellCheck={false}
-                    aria-invalid={Boolean(scanError)}
-                  />
-                </div>
-              </label>
-
+            <form onSubmit={handleScan} className="mt-4 grid gap-3 rounded-[5px] border border-[#cbdcec] bg-[#f8fbfe] p-3.5 sm:grid-cols-[190px_minmax(0,1fr)]">
+              <label><span className="mb-2 block text-sm font-bold text-[#365b80]">Identifier</span><NativeSelect value={scanMode} onChange={(event) => { setScanMode(event.target.value as "feid" | "uuid"); setSelected(null); setScanError(""); setScanValue(""); scanRef.current?.focus(); }} className="h-14 w-full rounded-[5px] border-2 border-[#d1dfed] bg-white px-4 font-bold"><NativeSelectOption value="feid">Plot FEID</NativeSelectOption><NativeSelectOption value="uuid">Plot UUID</NativeSelectOption></NativeSelect></label>
+              <label><span className="mb-2 block text-sm font-bold text-[#365b80]">Scanned code</span><div className="relative"><Barcode className="absolute left-4 top-1/2 size-6 -translate-y-1/2 text-[#6e94b9]" /><Input ref={scanRef} autoFocus value={scanValue} onChange={(event) => setScanValue(event.target.value)} className="h-14 rounded-[5px] border-2 border-[#d1dfed] bg-white pl-13 font-mono text-lg font-semibold" placeholder={scanMode === "feid" ? "Scan or enter the FEID" : "Scan or enter the UUID"} autoComplete="off" spellCheck={false} /></div></label>
             </form>
+            <p className="mt-3 text-sm text-[#657b90]"><strong>Quick flow:</strong> scan to load a plot. When PW is filled, press Enter or scan the same plot again to save.</p>
+            {scanError && <div role="alert" className="mt-4 flex items-center gap-3 rounded-lg border border-[#f2c8be] bg-[#fff4f1] px-4 py-3 text-[#963827]"><CircleAlert className="size-5" /><strong>{scanError}</strong></div>}
+          </article>
 
-            <p className="mt-3 text-sm text-[#657b90]"><strong>Fluxo rápido:</strong> bipe para carregar a parcela. Com o peso preenchido, pressione Enter ou bipe a mesma parcela novamente para salvar.</p>
-
-            {scanError && (
-              <div role="alert" className="mt-5 flex items-center gap-3 rounded-xl border border-[#f2c8be] bg-[#fff4f1] px-4 py-3 text-[#963827]">
-                <CircleAlert className="size-5 shrink-0" />
-                <span className="font-semibold">{scanError}</span>
-              </div>
-            )}
-          </div>
-
-          {selected && (
-            <article className="overflow-hidden rounded-lg border border-[#cbdcec] bg-white shadow-[0_10px_28px_rgba(26,59,93,0.08)]">
-              <div className="border-b border-[#2f5a84] bg-[#1f4269] p-5 text-white sm:p-6">
-                <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-2 rounded-[5px] bg-[#d9e9f6] px-3 py-1.5 text-sm font-black uppercase tracking-[0.08em] text-[#173f66]">
-                    <Check className="size-4" /> Parcela encontrada
-                  </span>
-                  {existingWeight && (
-                    <span className="rounded-[5px] bg-[#f5cf77] px-3 py-1.5 text-sm font-bold text-[#6a4700]">
-                      Já pesada: PW {formatNumber(existingWeight.weight)}
-                    </span>
-                  )}
-                </div>
-
-                <div className="grid gap-5 md:grid-cols-[minmax(0,1.45fr)_minmax(220px,0.55fr)]">
-                  <div>
-                    <p className="mb-1 text-xs font-bold uppercase tracking-[0.14em] text-[#bbcee1]">Entity name</p>
-                    <h2 className="break-words text-2xl font-extrabold leading-tight tracking-[-0.025em] text-white sm:text-3xl">{selected.entityName}</h2>
-                    <p className="mb-1 mt-5 text-xs font-bold uppercase tracking-[0.14em] text-[#bbcee1]">(OBS) Name</p>
-                    <p className="text-4xl font-black tracking-[-0.04em] text-white sm:text-5xl">{selected.obsName}</p>
-                  </div>
-                  <div className="rounded-md border border-white/20 bg-white/10 p-4">
-                    <p className="text-xs font-bold uppercase tracking-[0.12em] text-[#bbcee1]">(GER) Name</p>
-                    <p className="mt-2 break-words text-xl font-extrabold leading-tight text-white">{selected.gerName || "—"}</p>
-                    <p className="mt-4 flex items-center gap-2 text-sm font-semibold text-[#c7d7e7]"><MapPin className="size-4" /> {selected.location} · {selected.site}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid gap-6 p-5 sm:p-7 xl:grid-cols-[minmax(0,1fr)_330px]">
-                <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  {[
-                    ["Block", selected.block],
-                    ["Entry code", selected.entryCode],
-                    ["Row", selected.row],
-                    ["Column", selected.column],
-                  ].map(([label, value]) => (
-                    <div key={label} className="rounded-md border border-[#cfdeeb] bg-[#f7fafe] p-4">
-                      <dt className="text-xs font-bold uppercase tracking-[0.1em] text-[#6d8195]">{label}</dt>
-                      <dd className="mt-1 text-2xl font-black text-[#173a61]">{value || "—"}</dd>
-                    </div>
-                  ))}
-                  <div className="col-span-2 rounded-md border border-[#cfdeeb] bg-[#f7fafe] p-4 sm:col-span-4">
-                    <dt className="text-xs font-bold uppercase tracking-[0.1em] text-[#6d8195]">Identificadores</dt>
-                    <dd className="mt-2 grid gap-2 text-sm text-[#375b7d] sm:grid-cols-2">
-                      <span><strong>FEID:</strong> {selected.feid}</span>
-                      <span className="break-all"><strong>UUID:</strong> {selected.uuid}</span>
-                    </dd>
-                  </div>
-                </dl>
-
-                <form onSubmit={handleSave} className="rounded-md border border-[#cbdcec] bg-[#eaf2f9] p-5 text-[#173a61]">
-                  <label htmlFor="plot-weight" className="flex items-center gap-2 text-sm font-bold uppercase tracking-[0.1em] text-[#365c81]">
-                    <Scale className="size-4" /> Peso da parcela (PW)
-                  </label>
-                  <Input
-                    id="plot-weight"
-                    ref={weightRef}
-                    inputMode="decimal"
-                    value={weightValue}
-                    onChange={(event) => setWeightValue(event.target.value)}
-                    className="mt-3 h-16 rounded-[5px] border-2 border-[#d1dfed] bg-white px-4 text-3xl font-black text-[#173a61] placeholder:text-[#8ca0b5] focus-visible:border-[#7fa9d2] focus-visible:ring-[#669dcf]/20"
-                    placeholder="0,000"
-                    autoComplete="off"
-                  />
-                  <Button type="submit" disabled={saving} className="mt-3 h-12 w-full rounded-[5px] bg-[#1f4269] text-base font-black text-white hover:bg-[#173754]">
-                    {saving ? <LoaderCircle className="animate-spin" /> : <Check />}
-                    {existingWeight ? "Atualizar PW" : "Salvar PW"}
-                  </Button>
-                </form>
-              </div>
-            </article>
-          )}
-
-          <section aria-labelledby="recent-title" className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,0.08)] sm:p-6">
-            <div className="flex items-center justify-between gap-4 border-b-2 border-[#d6e3ef] pb-3">
-              <div>
-                <p className="text-sm font-bold uppercase tracking-[0.1em] text-[#315b86]">◷ Histórico recente</p>
-                <h2 id="recent-title" className="mt-1 text-2xl font-extrabold tracking-[-0.02em] text-[#173a61]">Últimas pesagens</h2>
-              </div>
-              <span className="rounded-[5px] bg-[#eaf3fb] px-2.5 py-1 text-xs font-bold text-[#315f8b]">10 mais recentes</span>
+          {selected && <article className="overflow-hidden rounded-lg border border-[#cbdcec] bg-white shadow-[0_10px_28px_rgba(26,59,93,0.08)]">
+            <div className="bg-[#1f4269] p-5 text-white sm:p-6"><div className="mb-5 flex justify-between gap-3"><span className="rounded-full bg-[#d9e9f6] px-3 py-1.5 text-sm font-black uppercase text-[#173f66]">✓ Plot found</span>{existingWeight && <span className="rounded-full bg-[#f5cf77] px-3 py-1.5 text-sm font-bold text-[#6a4700]">Already weighed: PW {formatNumber(existingWeight.weight)}</span>}</div><div className="grid gap-5 md:grid-cols-[1.45fr_.55fr]"><div><p className="text-xs font-bold uppercase tracking-[.14em] text-[#bbcee1]">Entity name</p><h2 className="text-3xl font-extrabold">{selected.entityName}</h2><p className="mt-5 text-xs font-bold uppercase tracking-[.14em] text-[#bbcee1]">(OBS) Name</p><p className="text-5xl font-black">{selected.obsName}</p></div><div className="rounded-md border border-white/20 bg-white/10 p-4"><p className="text-xs font-bold uppercase tracking-[.12em] text-[#bbcee1]">(GER) Name</p><p className="mt-2 text-xl font-extrabold">{selected.gerName || "—"}</p><p className="mt-4 flex items-center gap-2 text-sm text-[#c7d7e7]"><MapPin className="size-4" /> {selected.location || "Unspecified"} · {selected.site || "Unspecified"}</p></div></div></div>
+            <div className="grid gap-6 p-5 sm:p-7 xl:grid-cols-[1fr_330px]">
+              <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">{[["Block",selected.block],["Entry code",selected.entryCode],["Row",selected.row],["Column",selected.column]].map(([label,value]) => <div key={label} className="rounded-md border border-[#cfdeeb] bg-[#f7fafe] p-4"><dt className="text-xs font-bold uppercase text-[#6d8195]">{label}</dt><dd className="mt-1 text-2xl font-black">{value || "—"}</dd></div>)}<div className="col-span-2 rounded-md border border-[#cfdeeb] bg-[#f7fafe] p-4 sm:col-span-4"><dt className="text-xs font-bold uppercase text-[#6d8195]">Identifiers</dt><dd className="mt-2 grid gap-2 text-sm sm:grid-cols-2"><span><strong>FEID:</strong> {selected.feid}</span><span className="break-all"><strong>UUID:</strong> {selected.uuid}</span></dd></div></dl>
+              <form onSubmit={(event) => { event.preventDefault(); void saveCurrentWeight(); }} className="rounded-md border border-[#cbdcec] bg-[#eaf2f9] p-5"><label htmlFor="plot-weight" className="flex items-center gap-2 text-sm font-bold uppercase tracking-[.1em]"><Scale className="size-4" /> Plot weight (PW)</label><Input id="plot-weight" ref={weightRef} inputMode="decimal" value={weightValue} onChange={(event) => setWeightValue(event.target.value)} className="mt-3 h-16 border-2 bg-white px-4 text-3xl font-black" placeholder="0.000" /><Button type="submit" disabled={saving} className="mt-3 h-12 w-full rounded-[5px] bg-[#1f4269] text-base font-black">{saving ? <LoaderCircle className="animate-spin" /> : <Check />} {existingWeight ? "Update PW" : "Save PW"}</Button></form>
             </div>
+          </article>}
 
-            {recentWeights.length ? (
-              <div className="divide-y divide-[#dbe6f0]">
-                {recentWeights.map((record) => (
-                  <article key={record.uuid} className="grid items-center gap-3 py-3.5 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:gap-5">
-                    <div className="min-w-0">
-                      <p className="truncate text-lg font-extrabold text-[#173a61]">Parcela {record.obsName || "—"}</p>
-                      <p className="mt-1 truncate text-xs text-[#657b90]">{record.entityName || "Ensaio não informado"} · FEID {record.feid || "—"}</p>
-                    </div>
-                    <div className="text-left sm:min-w-24 sm:text-right">
-                      <p className="text-[10px] font-extrabold uppercase tracking-[0.1em] text-[#6d8195]">PW</p>
-                      <p className="text-xl font-black text-[#1f4269]">{formatNumber(record.weight)}</p>
-                    </div>
-                    <time dateTime={record.updatedAt} className="text-xs text-[#657b90] sm:min-w-28 sm:text-right">{formatDateTime(record.updatedAt)}</time>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="grid min-h-[190px] place-content-center justify-items-center text-center">
-                <div className="grid size-14 place-items-center rounded-lg bg-[#dceaf6] text-[#285882]"><Scale className="size-7" /></div>
-                <p className="mt-4 font-extrabold text-[#173a61]">Nenhuma pesagem registrada</p>
-                <p className="mt-1 text-sm text-[#647a90]">As pesagens salvas aparecerão aqui automaticamente.</p>
-              </div>
-            )}
+          <section className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,0.08)] sm:p-6"><div className="flex items-center justify-between border-b-2 border-[#d6e3ef] pb-3"><div><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]">◷ Recent history</p><h2 className="text-2xl font-extrabold">Latest weighings</h2></div><span className="rounded bg-[#eaf3fb] px-2.5 py-1 text-xs font-bold">10 most recent</span></div>{recent.length ? <div className="divide-y divide-[#dbe6f0]">{recent.map((record) => <article key={record.key} className="grid items-center gap-3 py-3.5 sm:grid-cols-[1fr_auto_auto]"><div><p className="text-lg font-extrabold">Plot {record.obsName || "—"}</p><p className="text-xs text-[#657b90]">{record.entityName || "Unnamed trial"} · FEID {record.feid || "—"}</p></div><div className="sm:text-right"><small className="font-bold">PW</small><p className="text-xl font-black">{formatNumber(record.weight)}</p></div><time className="text-xs text-[#657b90]">{formatDateTime(record.weighedAt || record.updatedAt)}</time></article>)}</div> : <div className="grid min-h-48 place-content-center justify-items-center text-center"><Scale className="size-12 rounded-lg bg-[#dceaf6] p-3" /><strong className="mt-3">No weighings recorded</strong><p className="text-sm text-[#647a90]">Saved weighings will appear here automatically.</p></div>}</section>
+        </section>
+      ) : (
+        <section className="mx-auto max-w-[1500px] space-y-5 px-[18px] pt-5">
+          <div className="flex items-start justify-between border-b-2 border-[#d6e3ef] pb-3"><div><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]">◴ Real-time report</p><h1 className="text-[29px] font-extrabold">Weighing dashboard</h1></div><span className="rounded-full bg-[#eaf3fb] px-3 py-1.5 text-sm font-bold text-[#315f8b]">● Live local data</span></div>
+          <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-[.55fr_.55fr_.55fr_1.4fr]">{[["Total expected",overall.total],["Weighed",overall.completed],["Pending",overall.remaining]].map(([label,value]) => <article key={label} className="rounded-lg bg-[#1f4269] p-5 text-white"><p className="text-xs font-bold uppercase tracking-[.08em] text-white/65">{label}</p><strong className="text-3xl">{value}</strong></article>)}<article className="rounded-lg bg-[#1f4269] p-5 text-white md:col-span-3 xl:col-span-1"><p className="text-xs font-bold uppercase tracking-[.08em] text-white/65">Completion</p><strong className="text-3xl">{overall.percent}%</strong><div className="mt-3 h-2 overflow-hidden rounded-full bg-white/15"><div className="h-full bg-[#8bb7df]" style={{ width: `${overall.percent}%` }} /></div></article></div>
+          {[{ title: "Progress by trial", items: trialProgress, icon: "Trials" }, { title: "Progress by location", items: locationProgress, icon: "Locations" }].map((group) => <section key={group.title} className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,.08)] sm:p-6"><div className="border-b-2 border-[#d6e3ef] pb-3"><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]">{group.icon}</p><h2 className="text-2xl font-extrabold">{group.title}</h2></div><div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{group.items.length ? group.items.map((item) => <DonutCard key={item.key} item={item} />) : <p className="text-sm text-[#657b90]">No data available for this session.</p>}</div></section>)}
+          <section className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,.08)] sm:p-6"><div className="flex items-end justify-between border-b-2 border-[#d6e3ef] pb-3"><div><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]"><Gauge className="mr-1 inline size-4" /> Plot records</p><h2 className="text-2xl font-extrabold">Weighing data</h2></div><strong className="text-sm text-[#60768d]">{filteredPlots.length} record{filteredPlots.length === 1 ? "" : "s"}</strong></div>
+            <div className="my-4 grid gap-2 md:grid-cols-2 xl:grid-cols-[1.5fr_.7fr_.7fr_.7fr]"><div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#6e94b9]" /><Input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} className="h-11 pl-9" placeholder="Search FEID, UUID, OBS or names…" /></div><NativeSelect value={trialFilter} onChange={(event) => { setTrialFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All trials</NativeSelectOption>{trials.map((value) => <NativeSelectOption key={value} value={value}>{value}</NativeSelectOption>)}</NativeSelect><NativeSelect value={locationFilter} onChange={(event) => { setLocationFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All locations</NativeSelectOption>{locations.map((value) => <NativeSelectOption key={value} value={value}>{value}</NativeSelectOption>)}</NativeSelect><NativeSelect value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All statuses</NativeSelectOption><NativeSelectOption value="weighed">Weighed</NativeSelectOption><NativeSelectOption value="pending">Pending</NativeSelectOption></NativeSelect></div>
+            <div className="overflow-auto rounded-lg border border-[#d4e0eb]"><table className="w-full whitespace-nowrap text-left text-xs"><thead className="bg-[#1f4269] text-white"><tr>{["Status","Entity name","(OBS) Name","FEID","UUID","Block","Entry code","Row","Column","(GER) Name","PW","Weighed at"].map((label) => <th key={label} className="p-3 text-[11px] uppercase tracking-wide">{label}</th>)}</tr></thead><tbody>{pageRows.length ? pageRows.map((plot,index) => { const record = weightsByUuid.get(normalize(plot.uuid)); return <tr key={plot.uuid} className={index % 2 ? "bg-[#f7fafd]" : "bg-white"}><td className="p-2.5"><span className={`rounded-full px-2 py-1 font-bold ${record ? "bg-[#daf0e9] text-[#1d6e59]" : "bg-[#eef1f4] text-[#6b7b88]"}`}>{record ? "Weighed" : "Pending"}</span></td>{[plot.entityName,plot.obsName,plot.feid,plot.uuid,plot.block,plot.entryCode,plot.row,plot.column,plot.gerName || "—"].map((value,i) => <td key={i} className="max-w-64 overflow-hidden text-ellipsis border-b border-[#e0e8ef] p-2.5" title={value}>{value}</td>)}<td className="border-b p-2.5">{record ? formatNumber(record.weight) : "—"}</td><td className="border-b p-2.5">{record ? formatDateTime(record.weighedAt || record.updatedAt) : "—"}</td></tr>; }) : <tr><td colSpan={12} className="p-8 text-center text-[#657b90]">No plots match the current filters.</td></tr>}</tbody></table></div>
+            <div className="mt-4 flex flex-col justify-between gap-3 text-sm text-[#60768d] sm:flex-row sm:items-center"><span>{filteredPlots.length ? `${(safePage - 1) * PAGE_SIZE + 1}–${Math.min(safePage * PAGE_SIZE, filteredPlots.length)} of ${filteredPlots.length}` : "0–0 of 0"}</span><div className="flex items-center gap-2"><Button variant="outline" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(value - 1, 1))}>← Previous</Button><span>Page {safePage} of {pageCount}</span><Button variant="outline" disabled={safePage >= pageCount} onClick={() => setPage((value) => Math.min(value + 1, pageCount))}>Next →</Button></div></div>
           </section>
         </section>
-
-        <aside className="h-fit rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,0.08)] sm:p-6 lg:sticky lg:top-[18px] lg:max-h-[calc(100vh-36px)] lg:overflow-auto">
-          <div className="flex items-start justify-between gap-4 border-b-2 border-[#d6e3ef] pb-3">
-            <div>
-              <p className="flex items-center gap-2 text-sm font-bold uppercase tracking-[0.1em] text-[#315b86]"><Gauge className="size-4" /> Relatório em tempo real</p>
-              <h2 className="mt-1 text-2xl font-extrabold tracking-[-0.02em] text-[#173a61]">Avanço por ensaio</h2>
-            </div>
-            <span className="mt-1 inline-flex items-center gap-1.5 rounded-[5px] bg-[#eaf3fb] px-2.5 py-1 text-xs font-bold text-[#315f8b]">
-              <span className="size-2 rounded-full bg-[#4d91cf]" /> Ao vivo
-            </span>
-          </div>
-
-          <div className="my-4 rounded-[7px] bg-[#1f4269] p-5 text-white">
-            <div className="flex items-end justify-between gap-4">
-              <div>
-                <p className="text-sm font-semibold text-white/65">Total concluído</p>
-                <p className="mt-1 text-4xl font-black tracking-[-0.04em]">{overallPercent}%</p>
-              </div>
-              <p className="text-right text-sm text-white/75"><strong className="text-lg text-white">{totalCompleted}</strong> pesadas<br />{Math.max(totalPlots - totalCompleted, 0)} faltam</p>
-            </div>
-            <Progress value={overallPercent} className="mt-4 h-3 bg-white/15 [&_[data-slot=progress-indicator]]:bg-[#8bb7df]" />
-          </div>
-
-          <div className="space-y-3">
-            {trials.map((trial) => (
-              <article key={trial.entityName} className="rounded-[7px] border border-[#cfdeeb] bg-[#f8fbfe] p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <span className="inline-flex rounded bg-[#dceaf6] px-2 py-1 text-xs font-black text-[#285882]">{trial.trialType}</span>
-                    <h3 className="mt-2 break-words text-base font-extrabold leading-tight text-[#173a61]">{trial.entityName}</h3>
-                    <p className="mt-1 text-sm text-[#657b90]">{trial.location} · parcelas {trial.initial}–{trial.final}</p>
-                  </div>
-                  <div className={`grid size-14 shrink-0 place-items-center rounded-[7px] text-sm font-black ${trial.percent === 100 ? "bg-[#2c8069] text-white" : "bg-[#e4eef7] text-[#315a80]"}`}>
-                    {trial.percent}%
-                  </div>
-                </div>
-                <Progress value={trial.percent} className="mt-4 h-2.5 bg-[#dde7f0] [&_[data-slot=progress-indicator]]:bg-[#4f8fc9]" />
-                <div className="mt-3 flex items-center justify-between text-sm">
-                  <span className="font-bold text-[#365b80]">{trial.completed} de {trial.total}</span>
-                  <span className={trial.remaining === 0 ? "font-black text-[#237a63]" : "font-semibold text-[#657b90]"}>
-                    {trial.remaining === 0 ? "Ensaio finalizado" : `${trial.remaining} faltam`}
-                  </span>
-                </div>
-              </article>
-            ))}
-          </div>
-
-          <p className="mt-4 text-center text-xs text-[#6d8195]">
-            {loading ? "Carregando pesagens…" : "Atualização automática a cada 5 segundos"}
-          </p>
-        </aside>
-      </div>
+      )}
     </main>
   );
 }

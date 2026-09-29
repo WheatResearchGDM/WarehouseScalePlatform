@@ -1,476 +1,341 @@
 (() => {
   "use strict";
 
-  const STORAGE_KEY = "gdm-warehouse-scale-weights-v1";
-  const PLOTS_STORAGE_KEY = "gdm-warehouse-scale-plots-v1";
   const SCALE_EXPONENT_KEY = "gdm-warehouse-scale-exponent-v1";
+  const PAGE_SIZE = 100;
   const state = {
-    plots: [], selected: null, weights: loadWeights(),
-    serialPort: null, serialReader: null, readLoop: null, keepReading: false,
-    serialBuffer: "", serialFlushTimer: null, rawScaleWeight: null,
-    scaleExponent: loadScaleExponent(), datasetName: "modelo incorporado",
+    database: null, sessions: [], session: null, plots: [], weights: [], selected: null,
+    serialPort: null, serialReader: null, readLoop: null, keepReading: false, serialBuffer: "",
+    serialFlushTimer: null, rawScaleWeight: null, scaleExponent: loadScaleExponent(), page: 1,
   };
   const byFeid = new Map();
   const byUuid = new Map();
   let toastTimer;
-
   const $ = (id) => document.getElementById(id);
   const refs = {
+    sessionSelect: $("session-select"), renameSession: $("rename-session"), deleteSession: $("delete-session"), newSession: $("new-session"),
+    weighingView: $("weighing-view"), dashboardView: $("dashboard-view"),
+    importData: $("import-data"), dataFile: $("data-file"), exportExcel: $("export-excel"), exportCsv: $("export-csv"), datasetNote: $("dataset-note"),
     scanForm: $("scan-form"), scanMode: $("scan-mode"), scanValue: $("scan-value"), scanError: $("scan-error"),
-    plotCard: $("plot-card"), weightForm: $("weight-form"), weight: $("plot-weight"),
-    saveButton: $("save-button"), existingBadge: $("existing-badge"), toast: $("toast"),
-    trialList: $("trial-list"), exportCsv: $("export-csv"), exportCount: $("export-count"),
-    recentList: $("recent-list"), recentEmpty: $("recent-empty"),
-    importExcel: $("import-excel"), excelFile: $("excel-file"), datasetNote: $("dataset-note"),
-    connectScale: $("connect-scale"), baudRate: $("baud-rate"), scaleFactor: $("scale-factor"), scaleStatus: $("scale-status"),
-    scaleWeight: $("scale-weight"), scaleReadingNote: $("scale-reading-note"), serialHelp: $("serial-help"),
+    plotCard: $("plot-card"), weightForm: $("weight-form"), weight: $("plot-weight"), saveButton: $("save-button"), existingBadge: $("existing-badge"),
+    recentList: $("recent-list"), recentEmpty: $("recent-empty"), toast: $("toast"),
+    connectScale: $("connect-scale"), baudRate: $("baud-rate"), scaleFactor: $("scale-factor"), scaleStatus: $("scale-status"), scaleWeight: $("scale-weight"), scaleReadingNote: $("scale-reading-note"), serialHelp: $("serial-help"),
+    tableSearch: $("table-search"), trialFilter: $("trial-filter"), locationFilter: $("location-filter"), statusFilter: $("status-filter"), tableBody: $("plot-table-body"),
+    pagePrev: $("page-prev"), pageNext: $("page-next"), pageNumber: $("page-number"), pageSummary: $("page-summary"), tableCount: $("table-count"),
   };
-
-  function loadWeights() {
-    try {
-      const value = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-      return value && typeof value === "object" ? value : {};
-    } catch { return {}; }
-  }
-
-  function persistWeights() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.weights));
-  }
 
   function loadScaleExponent() {
     const value = Number(localStorage.getItem(SCALE_EXPONENT_KEY) || 0);
     return Number.isInteger(value) && value >= 0 && value <= 6 ? value : 0;
   }
-
-  function loadImportedDataset() {
-    try {
-      const value = JSON.parse(localStorage.getItem(PLOTS_STORAGE_KEY) || "null");
-      return value && Array.isArray(value.plots) && value.plots.length ? value : null;
-    } catch { return null; }
-  }
-
-  function normalize(value) { return String(value || "").trim().toUpperCase(); }
-  function formatNumber(value) { return new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 3 }).format(value); }
+  function normalize(value) { return window.GdmWeighingUtils.normalize(value); }
+  function parseWeight(value) { const text = String(value || "").trim(); return text ? Number(text.replace(",", ".")) : NaN; }
+  function formatNumber(value) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 }).format(value); }
   function formatDateTime(value) {
     const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "Horário indisponível";
-    return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(date);
+    return Number.isNaN(date.getTime()) ? "Unavailable" : new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(date);
   }
+  function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]); }
   function text(id, value) { $(id).textContent = value ?? "—"; }
-  function escapeHtml(value) {
-    return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
-  }
-
   function showToast(message, error = false) {
     clearTimeout(toastTimer);
     refs.toast.textContent = message;
     refs.toast.className = error ? "toast toast--error" : "toast";
     refs.toast.hidden = false;
-    toastTimer = setTimeout(() => { refs.toast.hidden = true; }, 3200);
+    toastTimer = setTimeout(() => { refs.toast.hidden = true; }, 5200);
   }
-
   function showScanError(message) {
     refs.scanError.textContent = `⚠ ${message}`;
     refs.scanError.hidden = false;
+    refs.scanValue.focus(); refs.scanValue.select();
+  }
+  function weightsMap() { return window.GdmWeighingUtils.byUuid(state.weights); }
+
+  async function refreshSessionList() {
+    state.sessions = await window.GdmWeighingStore.listSessions(state.database);
+    refs.sessionSelect.innerHTML = state.sessions.length
+      ? state.sessions.map((session) => `<option value="${escapeHtml(session.id)}">${escapeHtml(session.name)}</option>`).join("")
+      : '<option value="">No active session</option>';
+    refs.sessionSelect.value = state.session?.id || "";
+    refs.renameSession.disabled = !state.session;
+    refs.deleteSession.disabled = !state.session;
+  }
+
+  async function loadSession(id) {
+    state.session = id ? await window.GdmWeighingStore.getSession(state.database, id) : null;
+    state.plots = state.session?.plots || [];
+    state.weights = state.session ? await window.GdmWeighingStore.getWeights(state.database, state.session.id) : [];
+    state.selected = null;
+    state.page = 1;
+    byFeid.clear(); byUuid.clear();
+    for (const plot of state.plots) { byFeid.set(normalize(plot.feid), plot); byUuid.set(normalize(plot.uuid), plot); }
+    refs.plotCard.hidden = true;
+    refs.scanValue.value = "";
+    refs.weight.value = "";
+    await refreshSessionList();
+    renderAll();
     refs.scanValue.focus();
-    refs.scanValue.select();
+  }
+
+  async function setActiveSession(id) {
+    await window.GdmWeighingStore.setActiveSession(state.database, id || null);
+    await loadSession(id || null);
+  }
+
+  function renderAll() {
+    const overall = window.GdmWeighingUtils.overallProgress(state.plots, state.weights);
+    text("header-count", `${overall.completed} of ${overall.total}`);
+    text("header-percent", `${overall.percent}%`);
+    refs.datasetNote.textContent = state.session
+      ? `Active session: ${state.session.name} · ${state.plots.length} imported plots · last changed ${formatDateTime(state.session.updatedAt)}`
+      : "No weighing session loaded. Import a workbook to begin.";
+    refs.exportExcel.disabled = !state.session;
+    refs.exportCsv.disabled = !state.session;
+    renderRecent();
+    renderDashboard();
+  }
+
+  function renderRecent() {
+    const recent = [...state.weights].sort((a, b) => Date.parse(b.weighedAt || b.updatedAt) - Date.parse(a.weighedAt || a.updatedAt)).slice(0, 10);
+    refs.recentEmpty.hidden = recent.length > 0;
+    refs.recentList.hidden = recent.length === 0;
+    refs.recentList.innerHTML = recent.map((record) => `
+      <article class="recent-item"><div class="recent-item__plot"><strong>Plot ${escapeHtml(record.obsName || "—")}</strong><span>${escapeHtml(record.entityName || "Unnamed trial")} · FEID ${escapeHtml(record.feid || "—")}</span></div><div class="recent-item__weight"><small>PW</small><strong>${escapeHtml(formatNumber(Number(record.weight)))}</strong></div><time datetime="${escapeHtml(record.weighedAt || "")}">${escapeHtml(formatDateTime(record.weighedAt || record.updatedAt))}</time></article>`).join("");
+  }
+
+  function donutCards(items) {
+    if (!items.length) return '<p class="table-empty">No data available for this session.</p>';
+    return items.map((item) => `<article class="donut-card"><div class="donut" style="--percent:${item.percent}" role="img" aria-label="${escapeHtml(item.label)}: ${item.percent}% complete"><strong>${item.percent}%</strong></div><div><h3 title="${escapeHtml(item.label)}">${escapeHtml(item.label)}</h3><p><strong>${item.completed}</strong> weighed · <strong>${item.remaining}</strong> pending</p>${item.initial !== undefined ? `<p>Plots ${item.initial}–${item.final}</p>` : ""}</div></article>`).join("");
+  }
+
+  function fillFilter(select, values, label) {
+    const previous = select.value;
+    select.innerHTML = `<option value="">${label}</option>${values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}`;
+    if (values.includes(previous)) select.value = previous;
+  }
+
+  function renderDashboard() {
+    const overall = window.GdmWeighingUtils.overallProgress(state.plots, state.weights);
+    text("summary-total", overall.total); text("summary-weighed", overall.completed); text("summary-pending", overall.remaining); text("summary-percent", `${overall.percent}%`);
+    $("summary-progress").style.width = `${overall.percent}%`;
+    const trials = window.GdmWeighingUtils.groupProgress(state.plots, state.weights, "trial");
+    const locations = window.GdmWeighingUtils.groupProgress(state.plots, state.weights, "location");
+    $("trial-donuts").innerHTML = donutCards(trials);
+    $("location-donuts").innerHTML = donutCards(locations);
+    fillFilter(refs.trialFilter, [...new Set(state.plots.map((plot) => plot.entityName).filter(Boolean))].sort(), "All trials");
+    fillFilter(refs.locationFilter, [...new Set(state.plots.map((plot) => plot.location).filter(Boolean))].sort(), "All locations");
+    renderTable();
+  }
+
+  function renderTable() {
+    const records = weightsMap();
+    const search = normalize(refs.tableSearch.value);
+    const trial = refs.trialFilter.value;
+    const location = refs.locationFilter.value;
+    const status = refs.statusFilter.value;
+    const filtered = state.plots.filter((plot) => {
+      const weighed = records.has(normalize(plot.uuid));
+      const haystack = normalize([plot.feid, plot.uuid, plot.obsName, plot.entityName, plot.gerName, plot.location].join(" "));
+      return (!search || haystack.includes(search)) && (!trial || plot.entityName === trial) && (!location || plot.location === location)
+        && (!status || (status === "weighed" ? weighed : !weighed));
+    });
+    const pages = Math.max(Math.ceil(filtered.length / PAGE_SIZE), 1);
+    state.page = Math.min(Math.max(state.page, 1), pages);
+    const start = (state.page - 1) * PAGE_SIZE;
+    const rows = filtered.slice(start, start + PAGE_SIZE);
+    refs.tableBody.innerHTML = rows.length ? rows.map((plot) => {
+      const record = records.get(normalize(plot.uuid));
+      return `<tr><td><span class="status-pill ${record ? "status-pill--done" : "status-pill--pending"}">${record ? "Weighed" : "Pending"}</span></td><td title="${escapeHtml(plot.entityName)}">${escapeHtml(plot.entityName)}</td><td>${escapeHtml(plot.obsName)}</td><td>${escapeHtml(plot.feid)}</td><td title="${escapeHtml(plot.uuid)}">${escapeHtml(plot.uuid)}</td><td>${escapeHtml(plot.block)}</td><td>${escapeHtml(plot.entryCode)}</td><td>${escapeHtml(plot.row)}</td><td>${escapeHtml(plot.column)}</td><td title="${escapeHtml(plot.gerName)}">${escapeHtml(plot.gerName || "—")}</td><td>${record ? escapeHtml(formatNumber(Number(record.weight))) : "—"}</td><td>${record ? escapeHtml(formatDateTime(record.weighedAt || record.updatedAt)) : "—"}</td></tr>`;
+    }).join("") : '<tr><td colspan="12" class="table-empty">No plots match the current filters.</td></tr>';
+    refs.tableCount.textContent = `${filtered.length} record${filtered.length === 1 ? "" : "s"}`;
+    refs.pageSummary.textContent = filtered.length ? `${start + 1}–${Math.min(start + PAGE_SIZE, filtered.length)} of ${filtered.length}` : "0–0 of 0";
+    refs.pageNumber.textContent = `Page ${state.page} of ${pages}`;
+    refs.pagePrev.disabled = state.page <= 1;
+    refs.pageNext.disabled = state.page >= pages;
+  }
+
+  function selectPlot(plot) {
+    state.selected = plot;
+    refs.scanError.hidden = true; refs.plotCard.hidden = false; refs.scanValue.value = "";
+    text("entity-name", plot.entityName); text("obs-name", plot.obsName); text("ger-name", plot.gerName || "—");
+    text("location", `⌖ ${plot.location || "Unspecified"} · ${plot.site || "Unspecified"}`);
+    text("block", plot.block || "—"); text("entry-code", plot.entryCode || "—"); text("row", plot.row || "—"); text("column", plot.column || "—"); text("feid", plot.feid); text("uuid", plot.uuid);
+    const existing = weightsMap().get(normalize(plot.uuid));
+    refs.weight.value = existing ? String(existing.weight) : "";
+    refs.existingBadge.hidden = !existing;
+    refs.existingBadge.textContent = existing ? `Already weighed: PW ${formatNumber(existing.weight)}` : "";
+    refs.saveButton.textContent = existing ? "✓ Update PW" : "✓ Save PW";
+    setTimeout(() => refs.scanValue.focus(), 0);
+  }
+  function clearSelection() {
+    state.selected = null; refs.plotCard.hidden = true; refs.scanValue.value = ""; refs.weight.value = "";
+    setTimeout(() => refs.scanValue.focus(), 0);
+  }
+  async function saveCurrentWeight() {
+    if (!state.selected || !state.session) return;
+    const weight = parseWeight(refs.weight.value);
+    if (!Number.isFinite(weight) || weight < 0) { showToast("Enter or wait for a valid non-negative scale weight.", true); refs.weight.focus(); refs.weight.select(); return; }
+    refs.saveButton.disabled = true;
+    try {
+      const plot = state.selected;
+      const saved = await window.GdmWeighingStore.saveWeight(state.database, state.session.id, plot, weight, state.serialPort ? "serial" : "manual");
+      state.weights = [saved, ...state.weights.filter((item) => normalize(item.uuid) !== normalize(saved.uuid))];
+      state.session.updatedAt = new Date().toISOString();
+      renderAll();
+      showToast(`PW ${formatNumber(weight)} saved for plot ${plot.obsName}.`);
+      clearSelection();
+    } catch (error) { showToast(error instanceof Error ? error.message : "Could not save the weight.", true); }
+    finally { refs.saveButton.disabled = false; }
+  }
+
+  async function importFile(file) {
+    refs.importData.disabled = true; refs.importData.textContent = "Importing…";
+    try {
+      const result = await window.GdmPlotImport.parseExcelFile(file);
+      const invalid = result.invalidRows.length + result.invalidWeightRows.length;
+      if (!state.session || !result.importedWeights.length) {
+        const session = await window.GdmWeighingStore.createSession(state.database, result.plots, result.fileName, undefined, result.importedWeights);
+        await setActiveSession(session.id);
+        showToast(`Session created with ${result.plots.length} plots and ${result.importedWeights.length} weights${invalid ? `; ${invalid} invalid row(s) skipped` : ""}.`);
+        return;
+      }
+      const merge = window.GdmWeighingUtils.prepareMerge(state.plots, state.weights, result.importedWeights);
+      let includeUnresolved = false;
+      if (merge.unresolved.length) {
+        includeUnresolved = window.confirm(`${merge.unresolved.length} conflicting weight(s) do not have comparable timestamps. Select OK to use the imported values, or Cancel to keep the current session values.`);
+      }
+      const entries = [...merge.ready, ...(includeUnresolved ? merge.unresolved : [])];
+      await window.GdmWeighingStore.saveWeights(state.database, state.session.id, entries);
+      state.weights = await window.GdmWeighingStore.getWeights(state.database, state.session.id);
+      state.session = await window.GdmWeighingStore.getSession(state.database, state.session.id);
+      renderAll();
+      const kept = merge.keptCurrent + (includeUnresolved ? 0 : merge.unresolved.length);
+      showToast(`Partial results: ${entries.length} imported, ${kept} current kept, ${merge.unchanged} unchanged, ${merge.ignored} unmatched, ${invalid} invalid.`);
+    } catch (error) { showToast(error instanceof Error ? error.message : "Could not import the file.", true); }
+    finally { refs.importData.disabled = false; refs.importData.textContent = "⇧ Import Excel / CSV"; refs.dataFile.value = ""; }
+  }
+
+  function exportData(format) {
+    if (!state.session) { showToast("Load a weighing session before exporting.", true); return; }
+    try { const count = window.GdmWeighingUtils.exportSession(state.session, state.weights, format); showToast(`${count} plot records exported to ${format === "xlsx" ? "Excel" : "CSV"}.`); }
+    catch (error) { showToast(error instanceof Error ? error.message : "Could not export the session.", true); }
   }
 
   function parseScaleWeight(rawLine) {
-    const cleaned = String(rawLine || "").replace(/\u0000/g, " ").trim();
-    if (!cleaned) return null;
-    const matches = cleaned.match(/[-+]?\d+(?:[.,]\d+)?/g);
+    const matches = String(rawLine || "").replace(/\u0000/g, " ").trim().match(/[-+]?\d+(?:[.,]\d+)?/g);
     if (!matches?.length) return null;
     const value = Number(matches[matches.length - 1].replace(",", "."));
     return Number.isFinite(value) && value >= 0 ? value : null;
   }
-
   function applyScaleWeight(rawValue, rawLine) {
     state.rawScaleWeight = rawValue;
     const value = rawValue / (10 ** state.scaleExponent);
-    refs.scaleWeight.textContent = formatNumber(value);
-    refs.scaleWeight.classList.add("is-live");
+    refs.scaleWeight.textContent = formatNumber(value); refs.scaleWeight.classList.add("is-live");
     const factor = state.scaleExponent ? ` · ÷ 10^${state.scaleExponent}` : "";
-    refs.scaleReadingNote.textContent = state.selected ? `PW preenchido automaticamente${factor}` : `Bipe uma parcela para aplicar${factor}`;
-    refs.scaleWeight.title = `Leitura bruta: ${formatNumber(rawValue)}${rawLine ? ` (${String(rawLine).trim()})` : ""}`;
-    if (state.selected) refs.weight.value = String(value).replace(".", ",");
+    refs.scaleReadingNote.textContent = state.selected ? `PW filled automatically${factor}` : `Scan a plot to apply${factor}`;
+    refs.scaleWeight.title = `Raw reading: ${formatNumber(rawValue)}${rawLine ? ` (${String(rawLine).trim()})` : ""}`;
+    if (state.selected) refs.weight.value = String(value);
   }
-
   function consumeSerialText(chunk) {
     state.serialBuffer += chunk;
-    const lines = state.serialBuffer.split(/\r\n|\n|\r/);
-    state.serialBuffer = lines.pop() || "";
-    for (const line of lines) {
-      const value = parseScaleWeight(line);
-      if (value !== null) applyScaleWeight(value, line);
-    }
+    const lines = state.serialBuffer.split(/\r\n|\n|\r/); state.serialBuffer = lines.pop() || "";
+    for (const line of lines) { const value = parseScaleWeight(line); if (value !== null) applyScaleWeight(value, line); }
     clearTimeout(state.serialFlushTimer);
-    state.serialFlushTimer = setTimeout(() => {
-      const value = parseScaleWeight(state.serialBuffer);
-      if (value !== null) applyScaleWeight(value, state.serialBuffer);
-      state.serialBuffer = "";
-    }, 180);
+    state.serialFlushTimer = setTimeout(() => { const value = parseScaleWeight(state.serialBuffer); if (value !== null) applyScaleWeight(value, state.serialBuffer); state.serialBuffer = ""; }, 180);
   }
-
   async function readFromScale() {
     const decoder = new TextDecoder();
     try {
       while (state.keepReading && state.serialPort?.readable) {
         state.serialReader = state.serialPort.readable.getReader();
-        try {
-          while (state.keepReading) {
-            const { value, done } = await state.serialReader.read();
-            if (done) break;
-            if (value) consumeSerialText(decoder.decode(value, { stream: true }));
-          }
-        } finally {
-          state.serialReader.releaseLock();
-          state.serialReader = null;
-        }
+        try { while (state.keepReading) { const { value, done } = await state.serialReader.read(); if (done) break; if (value) consumeSerialText(decoder.decode(value, { stream: true })); } }
+        finally { state.serialReader.releaseLock(); state.serialReader = null; }
       }
-    } catch (error) {
-      if (state.keepReading) {
-        showToast(error instanceof Error ? error.message : "A leitura da balança foi interrompida.", true);
-      }
-    }
+    } catch (error) { if (state.keepReading) showToast(error instanceof Error ? error.message : "Scale reading stopped.", true); }
   }
-
-  function setScaleConnected(connected, label = "Não conectada") {
-    refs.connectScale.dataset.connected = String(connected);
-    refs.connectScale.textContent = connected ? "Desconectar" : "Conectar balança";
-    refs.baudRate.disabled = connected;
-    refs.scaleStatus.textContent = label;
-    if (!connected) {
-      state.rawScaleWeight = null;
-      refs.scaleWeight.textContent = "—";
-      refs.scaleWeight.classList.remove("is-live");
-      refs.scaleReadingNote.textContent = "Aguardando conexão";
-    }
+  function setScaleConnected(connected, label = "Not connected") {
+    refs.connectScale.dataset.connected = String(connected); refs.connectScale.textContent = connected ? "Disconnect" : "Connect scale"; refs.baudRate.disabled = connected; refs.scaleStatus.textContent = label;
+    if (!connected) { state.rawScaleWeight = null; refs.scaleWeight.textContent = "—"; refs.scaleWeight.classList.remove("is-live"); refs.scaleReadingNote.textContent = "Waiting for connection"; }
   }
-
   async function disconnectScale(quiet = false) {
-    state.keepReading = false;
-    clearTimeout(state.serialFlushTimer);
-    try { await state.serialReader?.cancel(); } catch { /* reader may already be closed */ }
-    try { await state.readLoop; } catch { /* error already surfaced by the read loop */ }
+    state.keepReading = false; clearTimeout(state.serialFlushTimer);
+    try { await state.serialReader?.cancel(); } catch { /* already closed */ }
+    try { await state.readLoop; } catch { /* surfaced above */ }
     try { await state.serialPort?.close(); } catch { /* disconnected device */ }
-    state.serialReader = null;
-    state.serialPort = null;
-    state.readLoop = null;
-    state.serialBuffer = "";
-    setScaleConnected(false);
-    if (!quiet) showToast("Balança desconectada.");
+    state.serialReader = null; state.serialPort = null; state.readLoop = null; state.serialBuffer = ""; setScaleConnected(false);
+    if (!quiet) showToast("Scale disconnected.");
   }
-
   async function toggleScaleConnection() {
-    if (state.serialPort) {
-      await disconnectScale();
-      return;
-    }
-    if (!("serial" in navigator)) {
-      showToast("Use Google Chrome ou Microsoft Edge para conectar pela porta COM.", true);
-      return;
-    }
+    if (state.serialPort) { await disconnectScale(); return; }
+    if (!("serial" in navigator)) { showToast("Use Google Chrome or Microsoft Edge to connect through a COM port.", true); return; }
     try {
-      const port = await navigator.serial.requestPort();
-      await port.open({ baudRate: Number(refs.baudRate.value) });
-      state.serialPort = port;
-      state.keepReading = true;
+      const port = await navigator.serial.requestPort(); await port.open({ baudRate: Number(refs.baudRate.value) });
+      state.serialPort = port; state.keepReading = true;
       const info = port.getInfo?.() || {};
-      const identifiers = [
-        info.usbVendorId ? `VID ${info.usbVendorId.toString(16).toUpperCase().padStart(4, "0")}` : "",
-        info.usbProductId ? `PID ${info.usbProductId.toString(16).toUpperCase().padStart(4, "0")}` : "",
-      ].filter(Boolean).join(" · ");
-      setScaleConnected(true, identifiers ? `Conectada · ${identifiers}` : "Conectada à porta selecionada");
-      refs.scaleReadingNote.textContent = "Aguardando peso da balança";
-      state.readLoop = readFromScale();
-      showToast("Balança conectada. Aguardando leitura do peso.");
-    } catch (error) {
-      if (error?.name !== "NotFoundError") {
-        showToast(error instanceof Error ? error.message : "Não foi possível conectar à balança.", true);
-      }
-      await disconnectScale(true);
-    }
-  }
-
-  function csvCell(value) {
-    const text = String(value ?? "");
-    return /[;"\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-  }
-
-  function exportCsv() {
-    const rows = state.plots
-      .map((plot) => ({ plot, record: state.weights[normalize(plot.uuid)] }))
-      .filter((item) => item.record);
-    if (!rows.length) {
-      showToast("Ainda não há pesagens para exportar.", true);
-      return;
-    }
-    const header = ["Entity name", "(OBS) Name", "Block", "Entry code", "Row", "Column", "(GER) Name", "FEID", "UUID", "PW", "Atualizado em"];
-    const content = [header, ...rows.map(({ plot, record }) => [
-      plot.entityName, plot.obsName, plot.block, plot.entryCode, plot.row, plot.column,
-      plot.gerName, plot.feid, plot.uuid, String(record.weight).replace(".", ","), record.updatedAt,
-    ])].map((row) => row.map(csvCell).join(";")).join("\r\n");
-    const blob = new Blob(["\uFEFF", content], { type: "text/csv;charset=utf-8" });
-    const link = document.createElement("a");
-    const stamp = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
-    link.href = URL.createObjectURL(blob);
-    link.download = `pesagens-trigo_${stamp}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(link.href);
-    showToast(`${rows.length} pesagem(ns) exportada(s) em CSV.`);
-  }
-
-  function selectPlot(plot) {
-    state.selected = plot;
-    refs.scanError.hidden = true;
-    refs.plotCard.hidden = false;
-    refs.scanValue.value = "";
-    text("entity-name", plot.entityName);
-    text("obs-name", plot.obsName);
-    text("ger-name", plot.gerName || "—");
-    text("location", `⌖ ${plot.location} · ${plot.site}`);
-    text("block", plot.block);
-    text("entry-code", plot.entryCode);
-    text("row", plot.row);
-    text("column", plot.column);
-    text("feid", plot.feid);
-    text("uuid", plot.uuid);
-
-    const existing = state.weights[normalize(plot.uuid)];
-    refs.weight.value = existing ? String(existing.weight).replace(".", ",") : "";
-    refs.existingBadge.hidden = !existing;
-    refs.existingBadge.textContent = existing ? `Já pesada: PW ${formatNumber(existing.weight)}` : "";
-    refs.saveButton.textContent = existing ? "✓ Atualizar PW" : "✓ Salvar PW";
-    setTimeout(() => refs.scanValue.focus(), 0);
-  }
-
-  function clearSelection() {
-    state.selected = null;
-    refs.plotCard.hidden = true;
-    refs.scanValue.value = "";
-    refs.weight.value = "";
-    setTimeout(() => refs.scanValue.focus(), 0);
-  }
-
-  function renderProgress() {
-    const grouped = new Map();
-    for (const plot of state.plots) {
-      const items = grouped.get(plot.entityName) || [];
-      items.push(plot);
-      grouped.set(plot.entityName, items);
-    }
-
-    const trials = [...grouped.entries()].map(([entityName, items]) => {
-      const initial = Math.min(...items.map((item) => Number(item.initialPlot)));
-      const final = Math.max(...items.map((item) => Number(item.finalPlot)));
-      const total = final - initial + 1;
-      const completed = items.filter((item) => state.weights[normalize(item.uuid)]).length;
-      return {
-        entityName, initial, final, total, completed,
-        remaining: Math.max(total - completed, 0),
-        percent: total ? Math.round(completed / total * 100) : 0,
-        trialType: items[0].trialType,
-        location: items[0].location,
-      };
-    });
-
-    const total = trials.reduce((sum, trial) => sum + trial.total, 0);
-    const completed = trials.reduce((sum, trial) => sum + trial.completed, 0);
-    const remaining = Math.max(total - completed, 0);
-    const percent = total ? Math.round(completed / total * 100) : 0;
-
-    text("header-count", `${completed} de ${total}`);
-    text("header-percent", `${percent}%`);
-    text("overall-percent", `${percent}%`);
-    text("overall-completed", completed);
-    text("overall-remaining", remaining);
-    refs.exportCount.textContent = `(${completed})`;
-    $("overall-progress").style.width = `${percent}%`;
-
-    refs.trialList.innerHTML = trials.map((trial) => `
-      <article class="trial ${trial.percent === 100 ? "trial--done" : ""}">
-        <div class="trial__top">
-          <div>
-            <span class="trial__type">${escapeHtml(trial.trialType)}</span>
-            <h3>${escapeHtml(trial.entityName)}</h3>
-            <p>${escapeHtml(trial.location)} · parcelas ${trial.initial}–${trial.final}</p>
-          </div>
-          <span class="trial__percent">${trial.percent}%</span>
-        </div>
-        <div class="progress"><span style="width:${trial.percent}%"></span></div>
-        <div class="trial__footer"><span>${trial.completed} de ${trial.total}</span><span class="${trial.remaining === 0 ? "done" : ""}">${trial.remaining === 0 ? "Ensaio finalizado" : `${trial.remaining} faltam`}</span></div>
-      </article>`).join("");
-
-    renderRecentWeights();
-  }
-
-  function renderRecentWeights() {
-    const recent = Object.values(state.weights)
-      .filter((record) => record && Number.isFinite(Number(record.weight)) && byUuid.has(normalize(record.uuid)))
-      .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime())
-      .slice(0, 10);
-
-    refs.recentEmpty.hidden = recent.length > 0;
-    refs.recentList.hidden = recent.length === 0;
-    refs.recentList.innerHTML = recent.map((record) => `
-      <article class="recent-item">
-        <div class="recent-item__plot">
-          <strong>Parcela ${escapeHtml(record.obsName || "—")}</strong>
-          <span>${escapeHtml(record.entityName || "Ensaio não informado")} · FEID ${escapeHtml(record.feid || "—")}</span>
-        </div>
-        <div class="recent-item__weight"><small>PW</small><strong>${escapeHtml(formatNumber(Number(record.weight)))}</strong></div>
-        <time datetime="${escapeHtml(record.updatedAt || "")}">${escapeHtml(formatDateTime(record.updatedAt))}</time>
-      </article>`).join("");
-  }
-
-  function activatePlots(plots, datasetName, persist = false) {
-    state.plots = plots;
-    state.datasetName = datasetName || "planilha importada";
-    byFeid.clear();
-    byUuid.clear();
-    for (const plot of plots) {
-      byFeid.set(normalize(plot.feid), plot);
-      byUuid.set(normalize(plot.uuid), plot);
-    }
-    clearSelection();
-    renderProgress();
-    refs.datasetNote.textContent = `Base atual: ${state.datasetName} · ${plots.length} parcelas`;
-
-    if (persist) {
-      try {
-        localStorage.setItem(PLOTS_STORAGE_KEY, JSON.stringify({ fileName: state.datasetName, plots }));
-      } catch {
-        showToast("A planilha foi carregada, mas é grande demais para permanecer salva após fechar o navegador.", true);
-      }
-    }
-  }
-
-  async function importExcelFile(file) {
-    if (!window.GdmPlotImport?.parseExcelFile) {
-      showToast("O leitor de Excel não foi carregado. Atualize a página.", true);
-      return;
-    }
-    refs.importExcel.disabled = true;
-    refs.importExcel.textContent = "Importando…";
-    try {
-      const result = await window.GdmPlotImport.parseExcelFile(file);
-      activatePlots(result.plots, result.fileName, true);
-      showToast(`${result.plots.length} parcelas importadas de ${result.fileName}.`);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : "Não foi possível importar a planilha.", true);
-    } finally {
-      refs.importExcel.disabled = false;
-      refs.importExcel.textContent = "⇧ Importar Excel";
-      refs.excelFile.value = "";
-    }
-  }
-
-  function saveCurrentWeight() {
-    if (!state.selected) return;
-    const weight = Number(refs.weight.value.trim().replace(",", "."));
-    if (!Number.isFinite(weight) || weight <= 0) {
-      showToast("Aguardando um peso válido da balança.", true);
-      refs.weight.focus();
-      refs.weight.select();
-      return;
-    }
-
-    const plot = state.selected;
-    state.weights[normalize(plot.uuid)] = {
-      uuid: plot.uuid, feid: plot.feid, entityName: plot.entityName,
-      obsName: plot.obsName, weight, updatedAt: new Date().toISOString(),
-    };
-    persistWeights();
-    renderProgress();
-    showToast(`PW ${formatNumber(weight)} salvo para a parcela ${plot.obsName}.`);
-    clearSelection();
+      const identifiers = [info.usbVendorId ? `VID ${info.usbVendorId.toString(16).toUpperCase().padStart(4, "0")}` : "", info.usbProductId ? `PID ${info.usbProductId.toString(16).toUpperCase().padStart(4, "0")}` : ""].filter(Boolean).join(" · ");
+      setScaleConnected(true, identifiers ? `Connected · ${identifiers}` : "Connected to selected port");
+      refs.scaleReadingNote.textContent = "Waiting for scale weight"; state.readLoop = readFromScale(); showToast("Scale connected. Waiting for a weight reading.");
+    } catch (error) { if (error?.name !== "NotFoundError") showToast(error instanceof Error ? error.message : "Could not connect to the scale.", true); await disconnectScale(true); }
   }
 
   refs.scanForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!state.plots.length) {
-      showToast("Importe uma planilha Excel antes de iniciar a pesagem.", true);
-      return;
-    }
+    if (!state.session) { showToast("Import a workbook before weighing plots.", true); return; }
     const code = normalize(refs.scanValue.value);
-    const selectedCode = state.selected
-      ? normalize(refs.scanMode.value === "uuid" ? state.selected.uuid : state.selected.feid)
-      : "";
-
-    if (state.selected && (!code || code === selectedCode)) {
-      saveCurrentWeight();
-      return;
-    }
-
+    const selectedCode = state.selected ? normalize(refs.scanMode.value === "uuid" ? state.selected.uuid : state.selected.feid) : "";
+    if (state.selected && (!code || code === selectedCode)) { void saveCurrentWeight(); return; }
     const plot = refs.scanMode.value === "uuid" ? byUuid.get(code) : byFeid.get(code);
-    if (!plot) {
-      state.selected = null;
-      refs.plotCard.hidden = true;
-      showScanError(`${refs.scanMode.value.toUpperCase()} não encontrado na base.`);
-      showToast("Parcela não encontrada.", true);
-      return;
-    }
+    if (!plot) { state.selected = null; refs.plotCard.hidden = true; showScanError(`${refs.scanMode.value.toUpperCase()} was not found in this session.`); showToast("Plot not found.", true); return; }
     selectPlot(plot);
   });
-
-  refs.scanMode.addEventListener("change", () => {
-    refs.scanValue.placeholder = refs.scanMode.value === "feid" ? "Leia ou digite o FEID" : "Leia ou digite o UUID";
-    refs.scanValue.value = "";
-    refs.scanError.hidden = true;
-    refs.scanValue.focus();
-  });
-
-  refs.weightForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-    saveCurrentWeight();
-  });
-
+  refs.scanMode.addEventListener("change", () => { refs.scanValue.placeholder = refs.scanMode.value === "feid" ? "Scan or enter the FEID" : "Scan or enter the UUID"; refs.scanValue.value = ""; refs.scanError.hidden = true; refs.scanValue.focus(); });
+  refs.weightForm.addEventListener("submit", (event) => { event.preventDefault(); void saveCurrentWeight(); });
   refs.scaleFactor.value = String(state.scaleExponent);
-  refs.scaleFactor.addEventListener("change", () => {
-    state.scaleExponent = Number(refs.scaleFactor.value);
-    localStorage.setItem(SCALE_EXPONENT_KEY, String(state.scaleExponent));
-    if (state.rawScaleWeight !== null) applyScaleWeight(state.rawScaleWeight, "");
-    showToast(state.scaleExponent
-      ? `Fator de escala aplicado: leitura ÷ 10^${state.scaleExponent}.`
-      : "Fator de escala removido: leitura sem divisão.");
-  });
-
-  refs.importExcel.title = `Cabeçalhos obrigatórios: ${window.GdmPlotImport?.requiredHeaders?.join(", ") || "template GDM"}`;
-  refs.importExcel.addEventListener("click", () => refs.excelFile.click());
-  refs.excelFile.addEventListener("change", () => {
-    const [file] = refs.excelFile.files || [];
-    if (file) void importExcelFile(file);
-  });
+  refs.scaleFactor.addEventListener("change", () => { state.scaleExponent = Number(refs.scaleFactor.value); localStorage.setItem(SCALE_EXPONENT_KEY, String(state.scaleExponent)); if (state.rawScaleWeight !== null) applyScaleWeight(state.rawScaleWeight, ""); showToast(state.scaleExponent ? `Scale divisor applied: reading ÷ 10^${state.scaleExponent}.` : "Scale divisor removed."); });
   refs.connectScale.addEventListener("click", () => void toggleScaleConnection());
-  refs.exportCsv.addEventListener("click", exportCsv);
-
-  if (!("serial" in navigator)) {
-    refs.serialHelp.textContent = "Este navegador não oferece conexão COM. Abra o aplicativo no Google Chrome ou Microsoft Edge.";
-  }
-
-  navigator.serial?.addEventListener("disconnect", (event) => {
-    if (event.target === state.serialPort || event.port === state.serialPort) {
-      void disconnectScale(true);
-      showToast("A balança foi desconectada do computador.", true);
-    }
+  refs.importData.addEventListener("click", () => refs.dataFile.click());
+  refs.dataFile.addEventListener("change", () => { const [file] = refs.dataFile.files || []; if (file) void importFile(file); });
+  refs.exportExcel.addEventListener("click", () => exportData("xlsx"));
+  refs.exportCsv.addEventListener("click", () => exportData("csv"));
+  refs.sessionSelect.addEventListener("change", () => void setActiveSession(refs.sessionSelect.value));
+  refs.newSession.addEventListener("click", async () => {
+    try {
+      if (!state.session) { refs.dataFile.click(); return; }
+      const session = await window.GdmWeighingStore.createSession(state.database, state.plots, state.session.sourceFileName);
+      await setActiveSession(session.id); showToast(`New session “${session.name}” started.`);
+    } catch (error) { showToast(error instanceof Error ? error.message : "Could not start a new session.", true); }
   });
-
-  window.addEventListener("storage", (event) => {
-    if (event.key !== STORAGE_KEY) return;
-    state.weights = loadWeights();
-    renderProgress();
-    if (state.selected) selectPlot(state.selected);
+  refs.renameSession.addEventListener("click", async () => {
+    if (!state.session) return;
+    const name = window.prompt("Enter a new name for this session:", state.session.name);
+    if (name === null || !name.trim() || name.trim() === state.session.name) return;
+    try { state.session = await window.GdmWeighingStore.renameSession(state.database, state.session.id, name); await refreshSessionList(); renderAll(); showToast("Session renamed."); }
+    catch (error) { showToast(error instanceof Error ? error.message : "Could not rename the session.", true); }
   });
+  refs.deleteSession.addEventListener("click", async () => {
+    if (!state.session || !window.confirm(`Delete “${state.session.name}” and all of its locally saved weights? This cannot be undone.`)) return;
+    try { await window.GdmWeighingStore.deleteSession(state.database, state.session.id); const sessions = await window.GdmWeighingStore.listSessions(state.database); await setActiveSession(sessions[0]?.id || null); showToast("Session deleted."); }
+    catch (error) { showToast(error instanceof Error ? error.message : "Could not delete the session.", true); }
+  });
+  document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => {
+    document.querySelectorAll("[data-tab]").forEach((item) => item.classList.toggle("is-active", item === button));
+    const dashboard = button.dataset.tab === "dashboard";
+    refs.weighingView.hidden = dashboard; refs.dashboardView.hidden = !dashboard;
+    if (dashboard) renderDashboard(); else setTimeout(() => refs.scanValue.focus(), 0);
+  }));
+  [refs.tableSearch, refs.trialFilter, refs.locationFilter, refs.statusFilter].forEach((control) => control.addEventListener("input", () => { state.page = 1; renderTable(); }));
+  refs.pagePrev.addEventListener("click", () => { state.page -= 1; renderTable(); });
+  refs.pageNext.addEventListener("click", () => { state.page += 1; renderTable(); });
 
-  const importedDataset = loadImportedDataset();
-  if (importedDataset) {
-    activatePlots(importedDataset.plots, importedDataset.fileName || "planilha importada");
-    refs.scanValue.focus();
-  } else {
-    activatePlots([], "nenhuma planilha carregada");
-    refs.scanValue.focus();
-  }
+  if (!("serial" in navigator)) refs.serialHelp.textContent = "COM connection is not available in this browser. Open the app in Google Chrome or Microsoft Edge.";
+  navigator.serial?.addEventListener("disconnect", (event) => { if (event.target === state.serialPort || event.port === state.serialPort) { void disconnectScale(true); showToast("The scale was disconnected from the computer.", true); } });
+
+  (async function initialize() {
+    try {
+      const initialized = await window.GdmWeighingStore.init();
+      state.database = initialized.database;
+      await loadSession(initialized.activeSessionId);
+      if (state.session?.name === "Imported legacy session") showToast("Existing browser data was migrated to “Imported legacy session”.");
+    } catch (error) { showToast(error instanceof Error ? error.message : "Could not initialize browser storage.", true); renderAll(); }
+  })();
 })();

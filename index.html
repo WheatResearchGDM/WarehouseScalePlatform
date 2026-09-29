@@ -1,181 +1,121 @@
 <!doctype html>
-<html lang="pt-BR">
+<html lang="en-US">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0b4b33" />
-    <meta
-      name="description"
-      content="Leitura de parcelas, registro de PW e acompanhamento dos ensaios de trigo."
-    />
+    <meta name="theme-color" content="#1f4269" />
+    <meta name="description" content="GDM wheat trial plot weighing and progress dashboard." />
     <link rel="icon" href="public/favicon.svg" />
     <link rel="stylesheet" href="pages/styles.css" />
-    <title>Pesagem de Ensaios | GDM</title>
+    <title>Trial Weighing | GDM</title>
   </head>
   <body>
     <header class="topbar">
       <div class="topbar__inner">
         <div class="brand">
           <img class="brand__logo" src="public/gdm-logo.svg" alt="GDM" />
-          <div>
-            <div class="brand__line"><strong>Pesagem de Ensaios</strong></div>
-            <p>GDM Field Operations · Trigo</p>
-          </div>
+          <div><strong>Trial Weighing</strong><p>GDM Field Operations · Wheat</p></div>
         </div>
-        <div class="overall overall--header" aria-label="Avanço geral">
-          <div><small>Avanço geral</small><strong id="header-count">0 de 0</strong></div>
+        <div class="overall" aria-label="Overall progress">
+          <div><small>Overall progress</small><strong id="header-count">0 of 0</strong></div>
           <span id="header-percent">0%</span>
         </div>
       </div>
     </header>
 
-    <main class="workspace">
-      <section class="main-column">
+    <div class="controlbar">
+      <nav class="tabs" aria-label="Main navigation">
+        <button class="tab is-active" type="button" data-tab="weighing">⚖ Weighing</button>
+        <button class="tab" type="button" data-tab="dashboard">◴ Dashboard</button>
+      </nav>
+      <div class="session-controls">
+        <label for="session-select">Session</label>
+        <select id="session-select" aria-label="Active weighing session"><option value="">No active session</option></select>
+        <button id="rename-session" class="quiet-button" type="button" disabled>Rename</button>
+        <button id="delete-session" class="quiet-button quiet-button--danger" type="button" disabled>Delete</button>
+        <button id="new-session" class="primary-small" type="button">＋ Start New Weighing</button>
+      </div>
+    </div>
+
+    <main>
+      <section id="weighing-view" class="view workspace">
         <article class="panel scan-panel">
           <div class="panel-heading">
-            <div>
-              <p class="eyebrow">⚖ Operação de pesagem</p>
-              <h1>Leitura da parcela</h1>
-            </div>
+            <div><p class="eyebrow">⚖ Weighing operation</p><h1>Plot reading</h1></div>
             <div class="panel-actions">
-              <button id="import-excel" class="import-button" type="button">⇧ Importar Excel</button>
-              <input id="excel-file" type="file" accept=".xlsx,.xls" hidden />
-              <button id="export-csv" class="outline-button" type="button">⇩ Exportar CSV <span id="export-count">(0)</span></button>
-              <span class="device-status"><i></i> Dados locais</span>
+              <button id="import-data" class="import-button" type="button">⇧ Import Excel / CSV</button>
+              <input id="data-file" type="file" accept=".xlsx,.xls,.csv" hidden />
+              <button id="export-excel" class="outline-button" type="button" disabled>⇩ Export Excel</button>
+              <button id="export-csv" class="outline-button" type="button" disabled>⇩ Export CSV</button>
+              <span class="device-status"><i></i> Saved on this device</span>
             </div>
           </div>
-
-          <p id="dataset-note" class="dataset-note">Base atual: nenhuma planilha carregada · 0 parcelas</p>
+          <p id="dataset-note" class="dataset-note">No weighing session loaded</p>
 
           <section class="scale-panel" aria-labelledby="scale-title">
-            <div class="scale-panel__intro">
-              <div class="scale-icon" aria-hidden="true">⚖</div>
-              <div><strong id="scale-title">Balança serial</strong><span id="scale-status">Não conectada</span></div>
-            </div>
+            <div class="scale-panel__intro"><div class="scale-icon" aria-hidden="true">⚖</div><div><strong id="scale-title">Serial scale</strong><span id="scale-status">Not connected</span></div></div>
             <div class="scale-panel__controls">
-              <label for="baud-rate">Velocidade
-                <select id="baud-rate">
-                  <option value="1200">1200 baud</option>
-                  <option value="2400">2400 baud</option>
-                  <option value="4800">4800 baud</option>
-                  <option value="9600" selected>9600 baud</option>
-                  <option value="19200">19200 baud</option>
-                  <option value="38400">38400 baud</option>
-                  <option value="57600">57600 baud</option>
-                  <option value="115200">115200 baud</option>
-                </select>
-              </label>
-              <label for="scale-factor">Fator de escala
-                <select id="scale-factor" title="Divisor aplicado à leitura bruta da balança">
-                  <option value="0">÷ 10⁰</option>
-                  <option value="1">÷ 10¹</option>
-                  <option value="2">÷ 10²</option>
-                  <option value="3">÷ 10³</option>
-                  <option value="4">÷ 10⁴</option>
-                  <option value="5">÷ 10⁵</option>
-                  <option value="6">÷ 10⁶</option>
-                </select>
-              </label>
-              <button id="connect-scale" class="scale-button" type="button">Conectar balança</button>
+              <label for="baud-rate">Baud rate<select id="baud-rate"><option>1200</option><option>2400</option><option>4800</option><option selected>9600</option><option>19200</option><option>38400</option><option>57600</option><option>115200</option></select></label>
+              <label for="scale-factor">Scale divisor<select id="scale-factor" title="Divisor applied to the raw scale reading"><option value="0">÷ 10⁰</option><option value="1">÷ 10¹</option><option value="2">÷ 10²</option><option value="3">÷ 10³</option><option value="4">÷ 10⁴</option><option value="5">÷ 10⁵</option><option value="6">÷ 10⁶</option></select></label>
+              <button id="connect-scale" class="scale-button" type="button">Connect scale</button>
             </div>
-            <div class="scale-reading" aria-live="polite">
-              <span>Leitura atual</span><strong id="scale-weight">—</strong><small id="scale-reading-note">Aguardando conexão</small>
-            </div>
+            <div class="scale-reading" aria-live="polite"><span>Current reading</span><strong id="scale-weight">—</strong><small id="scale-reading-note">Waiting for connection</small></div>
           </section>
-          <p id="serial-help" class="serial-help">Conecte a balança, selecione FEID ou UUID e bipe a parcela para preencher o PW automaticamente.</p>
+          <p id="serial-help" class="serial-help">Connect the scale, select FEID or UUID, then scan a plot to fill PW automatically.</p>
 
           <form id="scan-form" class="scan-form">
-            <label>
-              <span>Identificador</span>
-              <select id="scan-mode" aria-label="Tipo de código">
-                <option value="feid">FEID da parcela</option>
-                <option value="uuid">UUID da parcela</option>
-              </select>
-            </label>
-            <label>
-              <span>Código lido</span>
-              <div class="input-with-icon"><b aria-hidden="true">▥</b><input id="scan-value" autocomplete="off" spellcheck="false" placeholder="Leia ou digite o FEID" autofocus /></div>
-            </label>
+            <label><span>Identifier</span><select id="scan-mode" aria-label="Identifier type"><option value="feid">Plot FEID</option><option value="uuid">Plot UUID</option></select></label>
+            <label><span>Scanned code</span><div class="input-with-icon"><b aria-hidden="true">▥</b><input id="scan-value" autocomplete="off" spellcheck="false" placeholder="Scan or enter the FEID" autofocus /></div></label>
           </form>
-          <p class="hint"><strong>Fluxo rápido:</strong> bipe para carregar a parcela. Com o peso preenchido, pressione Enter ou bipe a mesma parcela novamente para salvar.</p>
+          <p class="hint"><strong>Quick flow:</strong> scan to load a plot. When PW is filled, press Enter or scan the same plot again to save.</p>
           <div id="scan-error" class="alert" role="alert" hidden></div>
         </article>
 
         <article id="plot-card" class="panel plot-card" hidden>
           <div class="plot-card__hero">
-            <div class="plot-card__badges">
-              <span class="found-badge">✓ Parcela encontrada</span>
-              <span id="existing-badge" class="existing-badge" hidden></span>
-            </div>
+            <div class="plot-card__badges"><span class="found-badge">✓ Plot found</span><span id="existing-badge" class="existing-badge" hidden></span></div>
             <div class="plot-card__titles">
-              <div>
-                <p class="field-label">Entity name</p>
-                <h2 id="entity-name"></h2>
-                <p class="field-label field-label--spaced">(OBS) Name</p>
-                <p id="obs-name" class="obs-name"></p>
-              </div>
-              <div class="ger-card">
-                <p class="field-label">(GER) Name</p>
-                <strong id="ger-name"></strong>
-                <p id="location"></p>
-              </div>
+              <div><p class="field-label">Entity name</p><h2 id="entity-name"></h2><p class="field-label field-label--spaced">(OBS) Name</p><p id="obs-name" class="obs-name"></p></div>
+              <div class="ger-card"><p class="field-label">(GER) Name</p><strong id="ger-name"></strong><p id="location"></p></div>
             </div>
           </div>
-
           <div class="plot-card__body">
             <dl class="details-grid">
-              <div><dt>Block</dt><dd id="block"></dd></div>
-              <div><dt>Entry code</dt><dd id="entry-code"></dd></div>
-              <div><dt>Row</dt><dd id="row"></dd></div>
-              <div><dt>Column</dt><dd id="column"></dd></div>
-              <div class="identifiers"><dt>Identificadores</dt><dd><span><b>FEID:</b> <i id="feid"></i></span><span><b>UUID:</b> <i id="uuid"></i></span></dd></div>
+              <div><dt>Block</dt><dd id="block"></dd></div><div><dt>Entry code</dt><dd id="entry-code"></dd></div><div><dt>Row</dt><dd id="row"></dd></div><div><dt>Column</dt><dd id="column"></dd></div>
+              <div class="identifiers"><dt>Identifiers</dt><dd><span><b>FEID:</b> <i id="feid"></i></span><span><b>UUID:</b> <i id="uuid"></i></span></dd></div>
             </dl>
-
-            <form id="weight-form" class="weight-form">
-              <label for="plot-weight">⚖ Peso da parcela (PW)</label>
-              <input id="plot-weight" inputmode="decimal" autocomplete="off" placeholder="0,000" />
-              <button id="save-button" type="submit">✓ Salvar PW</button>
-            </form>
+            <form id="weight-form" class="weight-form"><label for="plot-weight">⚖ Plot weight (PW)</label><input id="plot-weight" inputmode="decimal" autocomplete="off" placeholder="0.000" /><button id="save-button" type="submit">✓ Save PW</button></form>
           </div>
         </article>
 
         <section class="panel recent-weighings" aria-labelledby="recent-title">
-          <div class="recent-weighings__heading">
-            <div>
-              <p class="eyebrow">◷ Histórico recente</p>
-              <h2 id="recent-title">Últimas pesagens</h2>
-            </div>
-            <span>10 mais recentes</span>
-          </div>
+          <div class="recent-weighings__heading"><div><p class="eyebrow">◷ Recent history</p><h2 id="recent-title">Latest weighings</h2></div><span>10 most recent</span></div>
           <div id="recent-list" class="recent-list" aria-live="polite"></div>
-          <div id="recent-empty" class="recent-empty">
-            <div aria-hidden="true">⚖</div>
-            <strong>Nenhuma pesagem registrada</strong>
-            <p>As pesagens salvas aparecerão aqui automaticamente.</p>
-          </div>
+          <div id="recent-empty" class="recent-empty"><div aria-hidden="true">⚖</div><strong>No weighings recorded</strong><p>Saved weighings will appear here automatically.</p></div>
         </section>
       </section>
 
-      <aside class="panel report-panel">
-        <div class="report-heading">
-          <div><p class="eyebrow">◴ Relatório em tempo real</p><h2>Avanço por ensaio</h2></div>
-          <span class="live-badge"><i></i> Ao vivo</span>
-        </div>
-        <div class="overall-card">
-          <div class="overall-card__line">
-            <div><small>Total concluído</small><strong id="overall-percent">0%</strong></div>
-            <p><b id="overall-completed">0</b> pesadas<br /><span id="overall-remaining">0</span> faltam</p>
-          </div>
-          <div class="progress"><span id="overall-progress"></span></div>
-        </div>
-        <div id="trial-list" class="trial-list"></div>
-        <p class="storage-note">Atualização imediata · dados salvos neste navegador</p>
-      </aside>
+      <section id="dashboard-view" class="view dashboard" hidden>
+        <div class="dashboard-heading"><div><p class="eyebrow">◴ Real-time report</p><h1>Weighing dashboard</h1></div><span class="live-badge"><i></i> Live local data</span></div>
+        <section class="summary-grid" aria-label="Session summary">
+          <article><span>Total expected</span><strong id="summary-total">0</strong></article><article><span>Weighed</span><strong id="summary-weighed">0</strong></article><article><span>Pending</span><strong id="summary-pending">0</strong></article><article class="summary-progress"><span>Completion</span><strong id="summary-percent">0%</strong><div class="progress"><i id="summary-progress"></i></div></article>
+        </section>
+        <section class="panel dashboard-panel"><div class="section-heading"><div><p class="eyebrow">Trials</p><h2>Progress by trial</h2></div></div><div id="trial-donuts" class="donut-grid"></div></section>
+        <section class="panel dashboard-panel"><div class="section-heading"><div><p class="eyebrow">Locations</p><h2>Progress by location</h2></div></div><div id="location-donuts" class="donut-grid"></div></section>
+        <section class="panel dashboard-panel table-panel">
+          <div class="section-heading"><div><p class="eyebrow">Plot records</p><h2>Weighing data</h2></div><strong id="table-count">0 records</strong></div>
+          <div class="filters"><input id="table-search" type="search" placeholder="Search FEID, UUID, OBS or names…" /><select id="trial-filter"><option value="">All trials</option></select><select id="location-filter"><option value="">All locations</option></select><select id="status-filter"><option value="">All statuses</option><option value="weighed">Weighed</option><option value="pending">Pending</option></select></div>
+          <div class="table-wrap"><table><thead><tr><th>Status</th><th>Entity name</th><th>(OBS) Name</th><th>FEID</th><th>UUID</th><th>Block</th><th>Entry code</th><th>Row</th><th>Column</th><th>(GER) Name</th><th>PW</th><th>Weighed at</th></tr></thead><tbody id="plot-table-body"></tbody></table></div>
+          <div class="pagination"><span id="page-summary">0–0 of 0</span><div><button id="page-prev" type="button">← Previous</button><span id="page-number">Page 1 of 1</span><button id="page-next" type="button">Next →</button></div></div>
+        </section>
+      </section>
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     <script src="public/vendor/xlsx.full.min.js" defer></script>
     <script src="public/plot-import.js" defer></script>
+    <script src="public/weighing-store.js" defer></script>
+    <script src="public/weighing-utils.js" defer></script>
     <script src="pages/app.js" defer></script>
   </body>
 </html>
