@@ -53,7 +53,7 @@ type UtilsApi = {
   groupProgress(plots: Plot[], weights: WeightRecord[], key: "trial" | "location"): ProgressItem[];
   overallProgress(plots: Plot[], weights: WeightRecord[]): OverallProgress;
   prepareMerge(plots: Plot[], current: WeightRecord[], imported: ImportedWeight[]): MergePlan;
-  exportSession(session: WeighingSession, weights: WeightRecord[], format: "xlsx" | "csv"): number;
+  exportSession(session: WeighingSession, weights: WeightRecord[], format: "xlsx" | "csv", plots?: Plot[]): number;
 };
 type ImportApi = { parseExcelFile(file: File): Promise<ImportResult> };
 type SerialPortLike = {
@@ -107,6 +107,22 @@ function parseScaleWeight(rawLine: string) {
   if (!matches?.length) return null;
   const value = Number(matches[matches.length - 1].replace(",", "."));
   return Number.isFinite(value) && value >= 0 ? value : null;
+}
+function scaleFactorLabel(exponent: number) { return exponent < 0 ? `× 10^${Math.abs(exponent)}` : exponent > 0 ? `÷ 10^${exponent}` : "raw value"; }
+function playScanTone(kind: "found" | "existing" | "attention") {
+  try {
+    const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const context = new AudioContextClass();
+    const patterns = kind === "found" ? [[740, 0, .08], [988, .09, .09]] : kind === "existing" ? [[520, 0, .11], [440, .12, .1]] : [[240, 0, .12], [170, .14, .15]];
+    const gain = context.createGain(); gain.gain.setValueAtTime(.0001, context.currentTime); gain.connect(context.destination);
+    for (const [frequency, offset, duration] of patterns) {
+      const oscillator = context.createOscillator(); oscillator.type = "sine"; oscillator.frequency.value = frequency; oscillator.connect(gain);
+      gain.gain.setValueAtTime(.0001, context.currentTime + offset); gain.gain.exponentialRampToValueAtTime(.11, context.currentTime + offset + .012); gain.gain.exponentialRampToValueAtTime(.0001, context.currentTime + offset + duration);
+      oscillator.start(context.currentTime + offset); oscillator.stop(context.currentTime + offset + duration + .01);
+    }
+    window.setTimeout(() => void context.close(), 450);
+  } catch { /* Audio feedback is optional. */ }
 }
 
 function calculateProgress(plots: Plot[], weights: WeightRecord[], grouping: "trial" | "location") {
@@ -185,6 +201,8 @@ export default function Home() {
   const [locationFilter, setLocationFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
+  const [selectedTrials, setSelectedTrials] = useState<string[]>([]);
+  const [sort, setSort] = useState<{ key: string; direction: "asc" | "desc" }>({ key: "", direction: "asc" });
   const [baudRate, setBaudRate] = useState("9600");
   const [scaleExponent, setScaleExponent] = useState("0");
   const [scaleConnected, setScaleConnected] = useState(false);
@@ -209,21 +227,39 @@ export default function Home() {
   const byFeid = useMemo(() => new Map(plots.map((plot) => [normalize(plot.feid), plot])), [plots]);
   const byUuid = useMemo(() => new Map(plots.map((plot) => [normalize(plot.uuid), plot])), [plots]);
   const weightsByUuid = useMemo(() => new Map(weights.map((record) => [normalize(record.uuid), record])), [weights]);
-  const overall = useMemo<OverallProgress>(() => calculateOverall(plots, weights), [plots, weights]);
-  const trialProgress = useMemo(() => calculateProgress(plots, weights, "trial"), [plots, weights]);
-  const locationProgress = useMemo(() => calculateProgress(plots, weights, "location"), [plots, weights]);
-  const recent = useMemo(() => [...weights].sort((a, b) => Date.parse(b.weighedAt || b.updatedAt) - Date.parse(a.weighedAt || a.updatedAt)).slice(0, 10), [weights]);
-  const trials = useMemo(() => [...new Set(plots.map((plot) => plot.entityName).filter(Boolean))].sort(), [plots]);
-  const locations = useMemo(() => [...new Set(plots.map((plot) => plot.location).filter(Boolean))].sort(), [plots]);
+  const trials = useMemo(() => [...new Set(plots.map((plot) => plot.entityName || "Unnamed trial"))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [plots]);
+  const selectedTrialSet = useMemo(() => new Set(selectedTrials), [selectedTrials]);
+  const activePlots = useMemo(() => plots.filter((plot) => selectedTrialSet.has(plot.entityName || "Unnamed trial")), [plots, selectedTrialSet]);
+  const overall = useMemo<OverallProgress>(() => calculateOverall(activePlots, weights), [activePlots, weights]);
+  const trialProgress = useMemo(() => calculateProgress(activePlots, weights, "trial"), [activePlots, weights]);
+  const locationProgress = useMemo(() => calculateProgress(activePlots, weights, "location"), [activePlots, weights]);
+  const recent = useMemo(() => weights.filter((record) => selectedTrialSet.has(record.entityName || "Unnamed trial")).sort((a, b) => Date.parse(b.weighedAt || b.updatedAt) - Date.parse(a.weighedAt || a.updatedAt)).slice(0, 10), [weights, selectedTrialSet]);
+  const locations = useMemo(() => [...new Set(activePlots.map((plot) => plot.location).filter(Boolean))].sort(), [activePlots]);
+  useEffect(() => {
+    if (trialFilter && !selectedTrialSet.has(trialFilter)) setTrialFilter("");
+    if (locationFilter && !locations.includes(locationFilter)) setLocationFilter("");
+    setPage(1);
+  }, [selectedTrialSet, locations, trialFilter, locationFilter]);
   const filteredPlots = useMemo(() => {
     const needle = normalize(search);
-    return plots.filter((plot) => {
+    const rows = activePlots.filter((plot) => {
       const weighed = weightsByUuid.has(normalize(plot.uuid));
       const haystack = normalize([plot.feid, plot.uuid, plot.obsName, plot.entityName, plot.gerName, plot.location].join(" "));
       return (!needle || haystack.includes(needle)) && (!trialFilter || plot.entityName === trialFilter)
         && (!locationFilter || plot.location === locationFilter) && (!statusFilter || (statusFilter === "weighed" ? weighed : !weighed));
     });
-  }, [plots, weightsByUuid, search, trialFilter, locationFilter, statusFilter]);
+    if (sort.key) {
+      const collator = new Intl.Collator("en-US", { numeric: true, sensitivity: "base" });
+      rows.sort((left, right) => {
+        const leftRecord = weightsByUuid.get(normalize(left.uuid)); const rightRecord = weightsByUuid.get(normalize(right.uuid));
+        const value = (plot: Plot, record?: WeightRecord): string | number => sort.key === "status" ? (record ? "Weighed" : "Pending") : sort.key === "weight" ? (record?.weight ?? Number.POSITIVE_INFINITY) : sort.key === "weighedAt" ? (record?.weighedAt || record?.updatedAt || "") : String(plot[sort.key as keyof Plot] ?? "");
+        const a = value(left, leftRecord); const b = value(right, rightRecord);
+        const result = typeof a === "number" && typeof b === "number" ? a - b : collator.compare(String(a), String(b));
+        return sort.direction === "desc" ? -result : result;
+      });
+    }
+    return rows;
+  }, [activePlots, weightsByUuid, search, trialFilter, locationFilter, statusFilter, sort]);
   const pageCount = Math.max(Math.ceil(filteredPlots.length / PAGE_SIZE), 1);
   const safePage = Math.min(page, pageCount);
   const pageRows = filteredPlots.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
@@ -234,7 +270,9 @@ export default function Home() {
     if (!store) throw new Error("Session storage is unavailable.");
     const nextSession = await store.getSession(db, id);
     const nextWeights = nextSession ? await store.getWeights(db, nextSession.id) : [];
-    setSession(nextSession); setPlots(nextSession?.plots ?? []); setWeights(nextWeights); setSelected(null);
+    const nextPlots = nextSession?.plots ?? [];
+    setSession(nextSession); setPlots(nextPlots); setWeights(nextWeights); setSelected(null);
+    setSelectedTrials([...new Set(nextPlots.map((plot) => plot.entityName || "Unnamed trial"))]); setSort({ key: "", direction: "asc" });
     setScanValue(""); setWeightValue(""); setPage(1); setSessions(await store.listSessions(db));
     window.setTimeout(() => scanRef.current?.focus(), 0);
   }, []);
@@ -245,7 +283,7 @@ export default function Home() {
       try {
         const { store } = await loadRuntime();
         const exponent = Number(localStorage.getItem(SCALE_EXPONENT_KEY) || 0);
-        if (Number.isInteger(exponent) && exponent >= 0 && exponent <= 6) { exponentRef.current = exponent; setScaleExponent(String(exponent)); }
+        if (Number.isInteger(exponent) && exponent >= -6 && exponent <= 6) { exponentRef.current = exponent; setScaleExponent(String(exponent)); }
         const initialized = await store.init();
         if (cancelled) return;
         setDatabase(initialized.database);
@@ -333,7 +371,8 @@ export default function Home() {
     const currentCode = selected ? normalize(scanMode === "feid" ? selected.feid : selected.uuid) : "";
     if (selected && (!code || code === currentCode)) { void saveCurrentWeight(); return; }
     const plot = scanMode === "feid" ? byFeid.get(code) : byUuid.get(code);
-    if (!plot) { setSelected(null); setScanError(`${scanMode.toUpperCase()} was not found in this session.`); toast.error("Plot not found."); scanRef.current?.select(); return; }
+    if (!plot || !selectedTrialSet.has(plot.entityName || "Unnamed trial")) { setSelected(null); playScanTone("attention"); setScanError(plot ? "This plot belongs to a trial excluded by the current trial filter." : `${scanMode.toUpperCase()} was not found in this session.`); toast.error(plot ? "Plot excluded by the trial filter." : "Plot not found."); scanRef.current?.select(); return; }
+    playScanTone(weightsByUuid.has(normalize(plot.uuid)) ? "existing" : "found");
     selectPlot(plot);
   }
   async function saveCurrentWeight() {
@@ -351,9 +390,11 @@ export default function Home() {
     finally { setSaving(false); }
   }
 
-  function exportSession(format: "xlsx" | "csv") {
+  function exportSession(format: "xlsx" | "csv", filteredOnly = false) {
     if (!session || !window.GdmWeighingUtils) { toast.error("Load a weighing session before exporting."); return; }
-    try { const count = window.GdmWeighingUtils.exportSession(session, weights, format); toast.success(`${count} plot records exported to ${format === "xlsx" ? "Excel" : "CSV"}.`); }
+    const exportPlots = filteredOnly ? filteredPlots : plots;
+    if (!exportPlots.length) { toast.error("No plot records match the current filters."); return; }
+    try { const count = window.GdmWeighingUtils.exportSession(session, weights, format, exportPlots); toast.success(`${count} ${filteredOnly ? "filtered " : ""}plot records exported to ${format === "xlsx" ? "Excel" : "CSV"}.`); }
     catch (error) { toast.error(error instanceof Error ? error.message : "Could not export the session."); }
   }
 
@@ -414,8 +455,17 @@ export default function Home() {
   function changeExponent(value: string) {
     exponentRef.current = Number(value); setScaleExponent(value); localStorage.setItem(SCALE_EXPONENT_KEY, value);
     if (rawScaleWeight !== null) applyScaleWeight(rawScaleWeight);
-    toast.success(value === "0" ? "Scale divisor removed." : `Scale divisor applied: reading ÷ 10^${value}.`);
+    toast.success(value === "0" ? "Raw scale value selected." : `Scale factor applied: reading ${scaleFactorLabel(Number(value))}.`);
   }
+  function changeSort(key: string) {
+    setSort((current) => current.key === key ? { key, direction: current.direction === "asc" ? "desc" : "asc" } : { key, direction: "asc" });
+    setPage(1);
+  }
+  const paginationSummary = filteredPlots.length ? `${(safePage - 1) * PAGE_SIZE + 1}–${Math.min(safePage * PAGE_SIZE, filteredPlots.length)} of ${filteredPlots.length}` : "0–0 of 0";
+  const tableColumns = [
+    ["Status", "status"], ["Entity name", "entityName"], ["(OBS) Name", "obsName"], ["FEID", "feid"], ["UUID", "uuid"], ["Block", "block"],
+    ["Entry code", "entryCode"], ["Row", "row"], ["Column", "column"], ["(GER) Name", "gerName"], ["PW", "weight"], ["Weighed at", "weighedAt"],
+  ];
 
   return (
     <main className="min-h-screen bg-[#edf3f8] pb-10 text-[#17365a]">
@@ -438,6 +488,13 @@ export default function Home() {
             {!sessions.length && <NativeSelectOption value="">No active session</NativeSelectOption>}
             {sessions.map((item) => <NativeSelectOption key={item.id} value={item.id}>{item.name}</NativeSelectOption>)}
           </NativeSelect>
+          <details className="group relative">
+            <summary className="flex h-10 min-w-36 cursor-pointer list-none items-center rounded-[5px] border border-[#bfd1e2] bg-white px-3 text-sm font-bold text-[#315b86]">{!trials.length ? "Trials: None" : selectedTrials.length === trials.length ? "Trials: All" : `Trials: ${selectedTrials.length} of ${trials.length}`}</summary>
+            <div className="absolute right-0 z-20 mt-1 w-[min(360px,calc(100vw-36px))] rounded-lg border border-[#bfd1e2] bg-white p-2 shadow-xl">
+              <div className="flex gap-2 border-b border-[#dce6ef] pb-2"><Button type="button" variant="outline" className="h-8 text-xs" onClick={() => { setSelectedTrials(trials); setPage(1); }}>Select all</Button><Button type="button" variant="outline" className="h-8 text-xs" onClick={() => { setSelectedTrials([]); setSelected(null); setPage(1); }}>Clear</Button></div>
+              <div className="max-h-64 overflow-auto pt-1">{trials.length ? trials.map((trial) => <label key={trial} className="flex cursor-pointer items-start gap-2 px-1 py-2 text-sm font-semibold"><input type="checkbox" checked={selectedTrialSet.has(trial)} onChange={(event) => { setSelectedTrials((current) => event.target.checked ? [...current, trial] : current.filter((item) => item !== trial)); if (!event.target.checked && (selected?.entityName || "Unnamed trial") === trial) setSelected(null); setPage(1); }} className="mt-0.5 accent-[#1f4269]" /><span>{trial}</span></label>) : <p className="p-3 text-sm text-[#657b90]">No trials loaded.</p>}</div>
+            </div>
+          </details>
           <Button type="button" variant="outline" disabled={!session} onClick={() => void renameActiveSession()} className="h-10 rounded-[5px]"><Pencil className="size-4" /> Rename</Button>
           <Button type="button" variant="outline" disabled={!session} onClick={() => void deleteActiveSession()} className="h-10 rounded-[5px] text-red-700"><Trash2 className="size-4" /> Delete</Button>
           <Button type="button" onClick={() => void startNewSession()} className="h-10 rounded-[5px] bg-[#1f4269] text-white"><Plus className="size-4" /> Start New Weighing</Button>
@@ -456,16 +513,16 @@ export default function Home() {
                 <Button type="button" disabled={!session} onClick={() => exportSession("csv")} className="h-9 rounded-[5px] bg-[#c88918] px-3 font-bold text-white hover:bg-[#b77710]"><Download className="size-4" /> Export CSV</Button>
               </div>
             </div>
-            <p className="mt-3 text-xs font-semibold text-[#60768d]">{session ? `Active session: ${session.name} · ${plots.length} imported plots · last changed ${formatDateTime(session.updatedAt)}` : "No weighing session loaded. Import a workbook to begin."}</p>
+            <p className="mt-3 text-xs font-semibold text-[#60768d]">{session ? `Active session: ${session.name} · ${activePlots.length} of ${plots.length} plots in the trial filter · last changed ${formatDateTime(session.updatedAt)}` : "No weighing session loaded. Import a workbook to begin."}</p>
 
             <section className="mt-3 grid gap-3 rounded-[5px] border border-[#cbdcec] border-l-4 border-l-[#78a9d8] bg-[#eaf2f9] p-3.5 xl:grid-cols-[minmax(150px,.7fr)_minmax(330px,1.6fr)_minmax(110px,.5fr)] xl:items-center">
               <div className="flex items-center gap-3"><div className="grid size-11 place-items-center rounded-[5px] bg-[#d6e6f3] text-[#25537f]"><Cable className="size-5" /></div><div><p className="font-extrabold text-[#173a61]">Serial scale</p><p className="text-xs text-[#60768d]">{scaleStatus}</p></div></div>
               <div className="grid items-end gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(95px,.72fr)_minmax(105px,.72fr)_minmax(125px,1fr)]">
                 <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">Baud rate<NativeSelect value={baudRate} onChange={(event) => setBaudRate(event.target.value)} disabled={scaleConnected} className="mt-1 h-10 w-full bg-white px-2 text-sm font-bold normal-case tracking-normal">{[1200,2400,4800,9600,19200,38400,57600,115200].map((rate) => <NativeSelectOption key={rate} value={String(rate)}>{rate} baud</NativeSelectOption>)}</NativeSelect></label>
-                <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">Scale divisor<NativeSelect value={scaleExponent} onChange={(event) => changeExponent(event.target.value)} className="mt-1 h-10 w-full bg-white px-2 text-sm font-bold normal-case tracking-normal">{[0,1,2,3,4,5,6].map((value) => <NativeSelectOption key={value} value={String(value)}>÷ 10{["⁰","¹","²","³","⁴","⁵","⁶"][value]}</NativeSelectOption>)}</NativeSelect></label>
+                <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">Scale factor<NativeSelect value={scaleExponent} onChange={(event) => changeExponent(event.target.value)} className="mt-1 h-10 w-full bg-white px-2 text-sm font-bold normal-case tracking-normal">{[-6,-5,-4,-3,-2,-1,0,1,2,3,4,5,6].map((value) => <NativeSelectOption key={value} value={String(value)}>{value < 0 ? `× 10${["⁰","¹","²","³","⁴","⁵","⁶"][Math.abs(value)]}` : value > 0 ? `÷ 10${["⁰","¹","²","³","⁴","⁵","⁶"][value]}` : "Raw value"}</NativeSelectOption>)}</NativeSelect></label>
                 <Button type="button" onClick={() => void toggleScale()} className={`h-10 rounded-[5px] font-extrabold sm:col-span-2 xl:col-span-1 ${scaleConnected ? "bg-[#d63b38]" : "bg-[#1f4269]"}`}>{scaleConnected ? "Disconnect" : "Connect scale"}</Button>
               </div>
-              <div className="border-t border-[#d5dfd0] pt-2 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0"><p className="text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">Current reading</p><p className={`text-3xl font-black ${scaleWeight === null ? "text-[#173a61]" : "text-[#237a63]"}`}>{scaleWeight === null ? "—" : formatNumber(scaleWeight)}</p><p className="mt-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">{scaleConnected ? `${selected ? "PW filled automatically" : "Scan a plot to apply"}${scaleExponent === "0" ? "" : ` · ÷ 10^${scaleExponent}`}` : "Waiting for connection"}</p></div>
+              <div className="border-t border-[#d5dfd0] pt-2 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0"><p className="text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">Current reading</p><p className={`text-3xl font-black ${scaleWeight === null ? "text-[#173a61]" : "text-[#237a63]"}`}>{scaleWeight === null ? "—" : formatNumber(scaleWeight)}</p><p className="mt-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">{scaleConnected ? `${selected ? "PW filled automatically" : "Scan a plot to apply"}${scaleExponent === "0" ? "" : ` · ${scaleFactorLabel(Number(scaleExponent))}`}` : "Waiting for connection"}</p></div>
             </section>
             <p className="mt-2 text-xs text-[#647a90]">Connect the scale, select FEID or UUID, then scan a plot to fill PW automatically.</p>
 
@@ -492,10 +549,11 @@ export default function Home() {
           <div className="flex items-start justify-between border-b-2 border-[#d6e3ef] pb-3"><div><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]">◴ Real-time report</p><h1 className="text-[29px] font-extrabold">Weighing dashboard</h1></div><span className="rounded-full bg-[#eaf3fb] px-3 py-1.5 text-sm font-bold text-[#315f8b]">● Live local data</span></div>
           <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-[.55fr_.55fr_.55fr_1.4fr]">{[["Total expected",overall.total],["Weighed",overall.completed],["Pending",overall.remaining]].map(([label,value]) => <article key={label} className="rounded-lg bg-[#1f4269] p-5 text-white"><p className="text-xs font-bold uppercase tracking-[.08em] text-white/65">{label}</p><strong className="text-3xl">{value}</strong></article>)}<article className="rounded-lg bg-[#1f4269] p-5 text-white md:col-span-3 xl:col-span-1"><p className="text-xs font-bold uppercase tracking-[.08em] text-white/65">Completion</p><strong className="text-3xl">{overall.percent}%</strong><div className="mt-3 h-2 overflow-hidden rounded-full bg-white/15"><div className="h-full bg-[#8bb7df]" style={{ width: `${overall.percent}%` }} /></div></article></div>
           {[{ title: "Progress by trial", items: trialProgress, icon: "Trials" }, { title: "Progress by location", items: locationProgress, icon: "Locations" }].map((group) => <section key={group.title} className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,.08)] sm:p-6"><div className="border-b-2 border-[#d6e3ef] pb-3"><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]">{group.icon}</p><h2 className="text-2xl font-extrabold">{group.title}</h2></div><div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{group.items.length ? group.items.map((item) => <DonutCard key={item.key} item={item} />) : <p className="text-sm text-[#657b90]">No data available for this session.</p>}</div></section>)}
-          <section className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,.08)] sm:p-6"><div className="flex items-end justify-between border-b-2 border-[#d6e3ef] pb-3"><div><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]"><Gauge className="mr-1 inline size-4" /> Plot records</p><h2 className="text-2xl font-extrabold">Weighing data</h2></div><strong className="text-sm text-[#60768d]">{filteredPlots.length} record{filteredPlots.length === 1 ? "" : "s"}</strong></div>
-            <div className="my-4 grid gap-2 md:grid-cols-2 xl:grid-cols-[1.5fr_.7fr_.7fr_.7fr]"><div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#6e94b9]" /><Input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} className="h-11 pl-9" placeholder="Search FEID, UUID, OBS or names…" /></div><NativeSelect value={trialFilter} onChange={(event) => { setTrialFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All trials</NativeSelectOption>{trials.map((value) => <NativeSelectOption key={value} value={value}>{value}</NativeSelectOption>)}</NativeSelect><NativeSelect value={locationFilter} onChange={(event) => { setLocationFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All locations</NativeSelectOption>{locations.map((value) => <NativeSelectOption key={value} value={value}>{value}</NativeSelectOption>)}</NativeSelect><NativeSelect value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All statuses</NativeSelectOption><NativeSelectOption value="weighed">Weighed</NativeSelectOption><NativeSelectOption value="pending">Pending</NativeSelectOption></NativeSelect></div>
-            <div className="overflow-auto rounded-lg border border-[#d4e0eb]"><table className="w-full whitespace-nowrap text-left text-xs"><thead className="bg-[#1f4269] text-white"><tr>{["Status","Entity name","(OBS) Name","FEID","UUID","Block","Entry code","Row","Column","(GER) Name","PW","Weighed at"].map((label) => <th key={label} className="p-3 text-[11px] uppercase tracking-wide">{label}</th>)}</tr></thead><tbody>{pageRows.length ? pageRows.map((plot,index) => { const record = weightsByUuid.get(normalize(plot.uuid)); return <tr key={plot.uuid} className={index % 2 ? "bg-[#f7fafd]" : "bg-white"}><td className="p-2.5"><span className={`rounded-full px-2 py-1 font-bold ${record ? "bg-[#daf0e9] text-[#1d6e59]" : "bg-[#eef1f4] text-[#6b7b88]"}`}>{record ? "Weighed" : "Pending"}</span></td>{[plot.entityName,plot.obsName,plot.feid,plot.uuid,plot.block,plot.entryCode,plot.row,plot.column,plot.gerName || "—"].map((value,i) => <td key={i} className="max-w-64 overflow-hidden text-ellipsis border-b border-[#e0e8ef] p-2.5" title={value}>{value}</td>)}<td className="border-b p-2.5">{record ? formatNumber(record.weight) : "—"}</td><td className="border-b p-2.5">{record ? formatDateTime(record.weighedAt || record.updatedAt) : "—"}</td></tr>; }) : <tr><td colSpan={12} className="p-8 text-center text-[#657b90]">No plots match the current filters.</td></tr>}</tbody></table></div>
-            <div className="mt-4 flex flex-col justify-between gap-3 text-sm text-[#60768d] sm:flex-row sm:items-center"><span>{filteredPlots.length ? `${(safePage - 1) * PAGE_SIZE + 1}–${Math.min(safePage * PAGE_SIZE, filteredPlots.length)} of ${filteredPlots.length}` : "0–0 of 0"}</span><div className="flex items-center gap-2"><Button variant="outline" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(value - 1, 1))}>← Previous</Button><span>Page {safePage} of {pageCount}</span><Button variant="outline" disabled={safePage >= pageCount} onClick={() => setPage((value) => Math.min(value + 1, pageCount))}>Next →</Button></div></div>
+          <section className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,.08)] sm:p-6"><div className="flex flex-wrap items-end justify-between gap-3 border-b-2 border-[#d6e3ef] pb-3"><div><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]"><Gauge className="mr-1 inline size-4" /> Plot records</p><h2 className="text-2xl font-extrabold">Weighing data</h2></div><div className="flex flex-wrap items-center justify-end gap-2"><strong className="mr-1 text-sm text-[#60768d]">{filteredPlots.length} record{filteredPlots.length === 1 ? "" : "s"}</strong><Button type="button" disabled={!filteredPlots.length} onClick={() => exportSession("xlsx", true)} className="h-9 bg-[#c88918] text-white hover:bg-[#b77710]"><Download className="size-4" /> Export filtered Excel</Button><Button type="button" disabled={!filteredPlots.length} onClick={() => exportSession("csv", true)} className="h-9 bg-[#c88918] text-white hover:bg-[#b77710]"><Download className="size-4" /> Export filtered CSV</Button></div></div>
+            <div className="my-4 grid gap-2 md:grid-cols-2 xl:grid-cols-[1.5fr_.7fr_.7fr_.7fr]"><div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#6e94b9]" /><Input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} className="h-11 pl-9" placeholder="Search FEID, UUID, OBS or names…" /></div><NativeSelect value={trialFilter} onChange={(event) => { setTrialFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All trials</NativeSelectOption>{trials.filter((value) => selectedTrialSet.has(value)).map((value) => <NativeSelectOption key={value} value={value}>{value}</NativeSelectOption>)}</NativeSelect><NativeSelect value={locationFilter} onChange={(event) => { setLocationFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All locations</NativeSelectOption>{locations.map((value) => <NativeSelectOption key={value} value={value}>{value}</NativeSelectOption>)}</NativeSelect><NativeSelect value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All statuses</NativeSelectOption><NativeSelectOption value="weighed">Weighed</NativeSelectOption><NativeSelectOption value="pending">Pending</NativeSelectOption></NativeSelect></div>
+            <div className="mb-3 flex flex-col justify-between gap-3 text-sm text-[#60768d] sm:flex-row sm:items-center"><span>{paginationSummary}</span><div className="flex items-center gap-2"><Button variant="outline" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(value - 1, 1))}>← Previous</Button><span>Page {safePage} of {pageCount}</span><Button variant="outline" disabled={safePage >= pageCount} onClick={() => setPage((value) => Math.min(value + 1, pageCount))}>Next →</Button></div></div>
+            <div className="overflow-auto rounded-lg border border-[#d4e0eb]"><table className="w-full whitespace-nowrap text-left text-xs"><thead className="bg-[#1f4269] text-white"><tr>{tableColumns.map(([label,key]) => <th key={key} className="p-0 text-[11px] uppercase tracking-wide"><button type="button" onClick={() => changeSort(key)} className="w-full p-3 text-left font-bold">{label} <span className={sort.key === key ? "text-white" : "text-[#9fc0df]"}>{sort.key === key ? (sort.direction === "asc" ? "↑" : "↓") : "↕"}</span></button></th>)}</tr></thead><tbody>{pageRows.length ? pageRows.map((plot,index) => { const record = weightsByUuid.get(normalize(plot.uuid)); return <tr key={plot.uuid} className={index % 2 ? "bg-[#f7fafd]" : "bg-white"}><td className="p-2.5"><span className={`rounded-full px-2 py-1 font-bold ${record ? "bg-[#daf0e9] text-[#1d6e59]" : "bg-[#eef1f4] text-[#6b7b88]"}`}>{record ? "Weighed" : "Pending"}</span></td>{[plot.entityName,plot.obsName,plot.feid,plot.uuid,plot.block,plot.entryCode,plot.row,plot.column,plot.gerName || "—"].map((value,i) => <td key={i} className="max-w-64 overflow-hidden text-ellipsis border-b border-[#e0e8ef] p-2.5" title={value}>{value}</td>)}<td className="border-b p-2.5">{record ? formatNumber(record.weight) : "—"}</td><td className="border-b p-2.5">{record ? formatDateTime(record.weighedAt || record.updatedAt) : "—"}</td></tr>; }) : <tr><td colSpan={12} className="p-8 text-center text-[#657b90]">No plots match the current filters.</td></tr>}</tbody></table></div>
+            <div className="mt-4 flex flex-col justify-between gap-3 text-sm text-[#60768d] sm:flex-row sm:items-center"><span>{paginationSummary}</span><div className="flex items-center gap-2"><Button variant="outline" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(value - 1, 1))}>← Previous</Button><span>Page {safePage} of {pageCount}</span><Button variant="outline" disabled={safePage >= pageCount} onClick={() => setPage((value) => Math.min(value + 1, pageCount))}>Next →</Button></div></div>
           </section>
         </section>
       )}

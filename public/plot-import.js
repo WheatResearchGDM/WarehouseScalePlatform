@@ -2,18 +2,34 @@
   "use strict";
 
   const fields = [
-    ["id", "ID"], ["feid", "FEID"], ["uuid", "UUID"], ["entityName", "Entity name"],
-    ["trialType", "Trial type"], ["site", "Site"], ["location", "Location"], ["row", "Row"],
-    ["column", "Column"], ["entryCode", "Entry code"], ["block", "Block"], ["obsName", "(OBS) Name"],
-    ["gid", "GID"], ["gerName", "(GER) Name"], ["initialPlot", "Initial plot"],
-    ["finalPlot", "Final plot"], ["pw", "PW"],
+    ["id", "ID", ["ID."]],
+    ["feid", "FEID", ["ID.FE.", "ID FE"]],
+    ["uuid", "UUID", []],
+    ["entityName", "Entity name", ["Nombre de la entidad", "Nome da entidade"]],
+    ["trialType", "Trial type", ["Tipo de ensayo", "Tipo de ensaio"]],
+    ["site", "Site", ["Sitio", "Unidade"]],
+    ["location", "Location", ["Ubicación", "Ubicaci�n", "Localização", "Localiza��o"]],
+    ["row", "Row", ["Fila", "Linha"]],
+    ["column", "Column", ["Columna", "Coluna"]],
+    ["entryCode", "Entry code", ["Código de entrada", "C�digo de entrada"]],
+    ["block", "Block", ["Bloque", "Bloco"]],
+    ["obsName", "(OBS) Name", ["(OBS) Nombre", "(OBS) Nome"]],
+    ["gid", "GID", []],
+    ["gerName", "(GER) Name", ["(GER) Nombre", "(GER) Nome"]],
+    ["initialPlot", "Initial plot", ["Parcela inicial"]],
+    ["finalPlot", "Final plot", ["Parcela final"]],
+    ["pw", "PW", []],
   ];
   const optionalFields = [
     ["weighingStatus", "Weighing status"], ["weighedAt", "Weighed at"],
     ["sessionId", "Session ID"], ["sessionName", "Session name"], ["exportedAt", "Exported at"],
   ];
 
-  function normalizeHeader(value) { return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase(); }
+  function normalizeHeader(value) {
+    return String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .trim().replace(/[._-]+/g, " ").replace(/\s+/g, " ").toLowerCase();
+  }
+  function headerAliases(field) { return [field[1], ...(field[2] || [])].map(normalizeHeader); }
   function cellText(value) { return value === null || value === undefined ? "" : String(value).trim(); }
   function numericCell(value) {
     const text = cellText(value);
@@ -37,19 +53,22 @@
     const rows = global.XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "", raw: true });
     if (!rows.length) throw new Error("The first sheet is empty.");
 
-    const requiredNames = fields.map(([, label]) => normalizeHeader(label));
+    const requiredNames = fields.map(headerAliases);
     const headerRowIndex = rows.findIndex((row) => {
       const values = new Set(row.map(normalizeHeader));
-      return requiredNames.every((name) => values.has(name));
+      return requiredNames.every((aliases) => aliases.some((name) => values.has(name)));
     });
     if (headerRowIndex < 0) {
       const available = new Set(rows.slice(0, 20).flat().map(normalizeHeader));
-      const missing = fields.filter(([, label]) => !available.has(normalizeHeader(label))).map(([, label]) => label);
+      const missing = fields.filter((field) => !headerAliases(field).some((alias) => available.has(alias))).map(([, label]) => label);
       throw new Error(`Missing headers: ${missing.join(", ")}.`);
     }
 
     const headers = rows[headerRowIndex].map(normalizeHeader);
-    const indexes = Object.fromEntries([...fields, ...optionalFields].map(([key, label]) => [key, headers.indexOf(normalizeHeader(label))]));
+    const indexes = Object.fromEntries([
+      ...fields.map((field) => [field[0], headerAliases(field).map((alias) => headers.indexOf(alias)).find((index) => index >= 0) ?? -1]),
+      ...optionalFields.map(([key, label]) => [key, headers.indexOf(normalizeHeader(label))]),
+    ]);
     const plots = [];
     const importedWeights = [];
     const invalidRows = [];

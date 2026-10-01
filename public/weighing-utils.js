@@ -75,10 +75,10 @@
     return { ready, unresolved, ignored, unchanged, keptCurrent };
   }
 
-  function exportRows(session, weights) {
+  function exportRows(session, weights, plots = session.plots) {
     const records = byUuid(weights);
     const exportedAt = new Date().toISOString();
-    return session.plots.map((plot) => {
+    return plots.map((plot) => {
       const row = {};
       for (const [label, key] of sourceColumns) row[label] = plot[key] ?? "";
       const record = records.get(normalize(plot.uuid));
@@ -109,9 +109,9 @@
     link.remove();
     setTimeout(() => URL.revokeObjectURL(href), 0);
   }
-  function exportSession(session, weights, format) {
+  function exportSession(session, weights, format, plots = session.plots) {
     if (!global.XLSX) throw new Error("The spreadsheet writer is unavailable.");
-    const rows = exportRows(session, weights);
+    const rows = exportRows(session, weights, plots);
     const stamp = fileStamp();
     const name = `${slug(session.name)}_${stamp}`;
     const sheet = global.XLSX.utils.json_to_sheet(rows);

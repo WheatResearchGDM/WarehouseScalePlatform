@@ -31,6 +31,13 @@
       <div class="session-controls">
         <label for="session-select">Session</label>
         <select id="session-select" aria-label="Active weighing session"><option value="">No active session</option></select>
+        <div class="trial-slicer">
+          <button id="trial-slicer-button" class="quiet-button" type="button" aria-expanded="false" aria-controls="trial-slicer-menu">Trials: All</button>
+          <div id="trial-slicer-menu" class="trial-slicer__menu" hidden>
+            <div class="trial-slicer__actions"><button id="trial-select-all" type="button">Select all</button><button id="trial-clear-all" type="button">Clear</button></div>
+            <div id="trial-slicer-options" class="trial-slicer__options"></div>
+          </div>
+        </div>
         <button id="rename-session" class="quiet-button" type="button" disabled>Rename</button>
         <button id="delete-session" class="quiet-button quiet-button--danger" type="button" disabled>Delete</button>
         <button id="new-session" class="primary-small" type="button">＋ Start New Weighing</button>
@@ -56,7 +63,7 @@
             <div class="scale-panel__intro"><div class="scale-icon" aria-hidden="true">⚖</div><div><strong id="scale-title">Serial scale</strong><span id="scale-status">Not connected</span></div></div>
             <div class="scale-panel__controls">
               <label for="baud-rate">Baud rate<select id="baud-rate"><option>1200</option><option>2400</option><option>4800</option><option selected>9600</option><option>19200</option><option>38400</option><option>57600</option><option>115200</option></select></label>
-              <label for="scale-factor">Scale divisor<select id="scale-factor" title="Divisor applied to the raw scale reading"><option value="0">÷ 10⁰</option><option value="1">÷ 10¹</option><option value="2">÷ 10²</option><option value="3">÷ 10³</option><option value="4">÷ 10⁴</option><option value="5">÷ 10⁵</option><option value="6">÷ 10⁶</option></select></label>
+              <label for="scale-factor">Scale factor<select id="scale-factor" title="Multiplier or divisor applied to the raw scale reading"><option value="-6">× 10⁶</option><option value="-5">× 10⁵</option><option value="-4">× 10⁴</option><option value="-3">× 10³</option><option value="-2">× 10²</option><option value="-1">× 10¹</option><option value="0">Raw value</option><option value="1">÷ 10¹</option><option value="2">÷ 10²</option><option value="3">÷ 10³</option><option value="4">÷ 10⁴</option><option value="5">÷ 10⁵</option><option value="6">÷ 10⁶</option></select></label>
               <button id="connect-scale" class="scale-button" type="button">Connect scale</button>
             </div>
             <div class="scale-reading" aria-live="polite"><span>Current reading</span><strong id="scale-weight">—</strong><small id="scale-reading-note">Waiting for connection</small></div>
@@ -103,9 +110,10 @@
         <section class="panel dashboard-panel"><div class="section-heading"><div><p class="eyebrow">Trials</p><h2>Progress by trial</h2></div></div><div id="trial-donuts" class="donut-grid"></div></section>
         <section class="panel dashboard-panel"><div class="section-heading"><div><p class="eyebrow">Locations</p><h2>Progress by location</h2></div></div><div id="location-donuts" class="donut-grid"></div></section>
         <section class="panel dashboard-panel table-panel">
-          <div class="section-heading"><div><p class="eyebrow">Plot records</p><h2>Weighing data</h2></div><strong id="table-count">0 records</strong></div>
+          <div class="section-heading"><div><p class="eyebrow">Plot records</p><h2>Weighing data</h2></div><div class="table-heading-actions"><strong id="table-count">0 records</strong><button id="dashboard-export-excel" class="outline-button" type="button">⇩ Export filtered Excel</button><button id="dashboard-export-csv" class="outline-button" type="button">⇩ Export filtered CSV</button></div></div>
           <div class="filters"><input id="table-search" type="search" placeholder="Search FEID, UUID, OBS or names…" /><select id="trial-filter"><option value="">All trials</option></select><select id="location-filter"><option value="">All locations</option></select><select id="status-filter"><option value="">All statuses</option><option value="weighed">Weighed</option><option value="pending">Pending</option></select></div>
-          <div class="table-wrap"><table><thead><tr><th>Status</th><th>Entity name</th><th>(OBS) Name</th><th>FEID</th><th>UUID</th><th>Block</th><th>Entry code</th><th>Row</th><th>Column</th><th>(GER) Name</th><th>PW</th><th>Weighed at</th></tr></thead><tbody id="plot-table-body"></tbody></table></div>
+          <div class="pagination pagination--top"><span id="page-summary-top">0–0 of 0</span><div><button id="page-prev-top" type="button">← Previous</button><span id="page-number-top">Page 1 of 1</span><button id="page-next-top" type="button">Next →</button></div></div>
+          <div class="table-wrap"><table><thead><tr><th><button type="button" data-sort="status">Status</button></th><th><button type="button" data-sort="entityName">Entity name</button></th><th><button type="button" data-sort="obsName">(OBS) Name</button></th><th><button type="button" data-sort="feid">FEID</button></th><th><button type="button" data-sort="uuid">UUID</button></th><th><button type="button" data-sort="block">Block</button></th><th><button type="button" data-sort="entryCode">Entry code</button></th><th><button type="button" data-sort="row">Row</button></th><th><button type="button" data-sort="column">Column</button></th><th><button type="button" data-sort="gerName">(GER) Name</button></th><th><button type="button" data-sort="weight">PW</button></th><th><button type="button" data-sort="weighedAt">Weighed at</button></th></tr></thead><tbody id="plot-table-body"></tbody></table></div>
           <div class="pagination"><span id="page-summary">0–0 of 0</span><div><button id="page-prev" type="button">← Previous</button><span id="page-number">Page 1 of 1</span><button id="page-next" type="button">Next →</button></div></div>
         </section>
       </section>

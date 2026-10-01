@@ -23,6 +23,14 @@ button:disabled { cursor: not-allowed; opacity: .52; }
 .session-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .session-controls label { color: #58708a; font-size: 12px; font-weight: 850; text-transform: uppercase; letter-spacing: .08em; }
 .session-controls select { max-width: 300px; height: 40px; padding: 0 10px; border: 1px solid #bfd1e2; border-radius: 5px; background: #fff; color: #17365a; font-weight: 700; }
+.trial-slicer { position: relative; }
+.trial-slicer > button { min-width: 145px; text-align: left; }
+.trial-slicer__menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 15; width: min(360px,calc(100vw - 36px)); padding: 10px; border: 1px solid #bfd1e2; border-radius: 7px; background: #fff; box-shadow: 0 14px 30px rgba(24,55,88,.2); }
+.trial-slicer__actions { display: flex; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid #dce6ef; }
+.trial-slicer__actions button { padding: 5px 8px; border: 0; border-radius: 4px; background: #eaf3fb; color: #315b86; font-size: 12px; font-weight: 800; }
+.trial-slicer__options { max-height: 260px; overflow: auto; padding-top: 6px; }
+.trial-slicer__options label { display: flex; align-items: flex-start; gap: 8px; padding: 7px 5px; color: #17365a; font-size: 13px; font-weight: 650; text-transform: none; letter-spacing: normal; }
+.trial-slicer__options input { margin-top: 2px; accent-color: #1f4269; }
 .quiet-button, .primary-small { min-height: 40px; padding: 0 12px; border-radius: 5px; font-size: 13px; font-weight: 800; }
 .quiet-button { border: 1px solid #bfd1e2; background: #fff; color: #315b86; }
 .quiet-button--danger { color: #a53632; }
@@ -126,11 +134,17 @@ select:focus, input:focus { border-color: #7fa9d2 !important; box-shadow: 0 0 0 
 .donut-card h3 { margin: 0; color: #173a61; font-size: 15px; line-height: 1.25; }
 .donut-card p { margin: 6px 0 0; color: #657b90; font-size: 12px; }
 .section-heading > strong { color: #60768d; font-size: 13px; }
+.table-heading-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.table-heading-actions strong { margin-right: 4px; color: #60768d; font-size: 13px; }
 .filters { display: grid; grid-template-columns: minmax(240px,1.5fr) repeat(3,minmax(150px,.7fr)); gap: 10px; margin: 16px 0; }
 .filters input, .filters select { min-width: 0; height: 42px; padding: 0 12px; border: 1px solid #c8d8e7; border-radius: 5px; background: #fff; color: #17365a; }
 .table-wrap { overflow: auto; border: 1px solid #d4e0eb; border-radius: 7px; }
 table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 12px; }
 th { position: sticky; top: 0; z-index: 1; padding: 11px 10px; background: #1f4269; color: #fff; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+th button { width: 100%; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; text-transform: inherit; letter-spacing: inherit; white-space: nowrap; }
+th button::after { content: " ↕"; color: #9fc0df; }
+th button[data-direction="asc"]::after { content: " ↑"; color: #fff; }
+th button[data-direction="desc"]::after { content: " ↓"; color: #fff; }
 td { max-width: 250px; padding: 10px; border-bottom: 1px solid #e0e8ef; overflow: hidden; color: #345570; text-overflow: ellipsis; }
 tbody tr:nth-child(even) { background: #f7fafd; }
 .status-pill { display: inline-flex; padding: 4px 8px; border-radius: 999px; font-size: 11px; font-weight: 850; }
@@ -138,6 +152,7 @@ tbody tr:nth-child(even) { background: #f7fafd; }
 .status-pill--pending { background: #eef1f4; color: #6b7b88; }
 .table-empty { padding: 30px; text-align: center; color: #657b90; }
 .pagination { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 14px; color: #60768d; font-size: 13px; }
+.pagination--top { margin: 0 0 12px; }
 .pagination > div { display: flex; align-items: center; gap: 10px; }
 .pagination button { min-height: 36px; padding: 0 12px; border: 1px solid #c6d7e6; border-radius: 5px; background: #fff; color: #315b86; font-weight: 750; }
 .toast { position: fixed; right: 24px; bottom: 24px; z-index: 20; max-width: min(520px,calc(100vw - 48px)); padding: 14px 18px; border-radius: 7px; background: #173f66; color: #fff; box-shadow: 0 12px 30px rgba(19,48,78,.28); font-weight: 750; }

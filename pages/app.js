@@ -7,6 +7,7 @@
     database: null, sessions: [], session: null, plots: [], weights: [], selected: null,
     serialPort: null, serialReader: null, readLoop: null, keepReading: false, serialBuffer: "",
     serialFlushTimer: null, rawScaleWeight: null, scaleExponent: loadScaleExponent(), page: 1,
+    selectedTrials: new Set(), sortKey: "", sortDirection: "asc", filteredPlots: [],
   };
   const byFeid = new Map();
   const byUuid = new Map();
@@ -14,6 +15,7 @@
   const $ = (id) => document.getElementById(id);
   const refs = {
     sessionSelect: $("session-select"), renameSession: $("rename-session"), deleteSession: $("delete-session"), newSession: $("new-session"),
+    trialSlicerButton: $("trial-slicer-button"), trialSlicerMenu: $("trial-slicer-menu"), trialSlicerOptions: $("trial-slicer-options"), trialSelectAll: $("trial-select-all"), trialClearAll: $("trial-clear-all"),
     weighingView: $("weighing-view"), dashboardView: $("dashboard-view"),
     importData: $("import-data"), dataFile: $("data-file"), exportExcel: $("export-excel"), exportCsv: $("export-csv"), datasetNote: $("dataset-note"),
     scanForm: $("scan-form"), scanMode: $("scan-mode"), scanValue: $("scan-value"), scanError: $("scan-error"),
@@ -22,11 +24,13 @@
     connectScale: $("connect-scale"), baudRate: $("baud-rate"), scaleFactor: $("scale-factor"), scaleStatus: $("scale-status"), scaleWeight: $("scale-weight"), scaleReadingNote: $("scale-reading-note"), serialHelp: $("serial-help"),
     tableSearch: $("table-search"), trialFilter: $("trial-filter"), locationFilter: $("location-filter"), statusFilter: $("status-filter"), tableBody: $("plot-table-body"),
     pagePrev: $("page-prev"), pageNext: $("page-next"), pageNumber: $("page-number"), pageSummary: $("page-summary"), tableCount: $("table-count"),
+    pagePrevTop: $("page-prev-top"), pageNextTop: $("page-next-top"), pageNumberTop: $("page-number-top"), pageSummaryTop: $("page-summary-top"),
+    dashboardExportExcel: $("dashboard-export-excel"), dashboardExportCsv: $("dashboard-export-csv"),
   };
 
   function loadScaleExponent() {
     const value = Number(localStorage.getItem(SCALE_EXPONENT_KEY) || 0);
-    return Number.isInteger(value) && value >= 0 && value <= 6 ? value : 0;
+    return Number.isInteger(value) && value >= -6 && value <= 6 ? value : 0;
   }
   function normalize(value) { return window.GdmWeighingUtils.normalize(value); }
   function parseWeight(value) { const text = String(value || "").trim(); return text ? Number(text.replace(",", ".")) : NaN; }
@@ -50,6 +54,24 @@
     refs.scanValue.focus(); refs.scanValue.select();
   }
   function weightsMap() { return window.GdmWeighingUtils.byUuid(state.weights); }
+  function trialNames() { return [...new Set(state.plots.map((plot) => plot.entityName || "Unnamed trial"))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })); }
+  function activePlots() { return state.plots.filter((plot) => state.selectedTrials.has(plot.entityName || "Unnamed trial")); }
+  function scaleFactorLabel(exponent = state.scaleExponent) { return exponent < 0 ? `× 10^${Math.abs(exponent)}` : exponent > 0 ? `÷ 10^${exponent}` : "raw value"; }
+  function playScanTone(kind) {
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      const context = new AudioContextClass();
+      const patterns = kind === "found" ? [[740, 0, .08], [988, .09, .09]] : kind === "existing" ? [[520, 0, .11], [440, .12, .1]] : [[240, 0, .12], [170, .14, .15]];
+      const gain = context.createGain(); gain.gain.setValueAtTime(.0001, context.currentTime); gain.connect(context.destination);
+      for (const [frequency, offset, duration] of patterns) {
+        const oscillator = context.createOscillator(); oscillator.type = "sine"; oscillator.frequency.value = frequency; oscillator.connect(gain);
+        gain.gain.setValueAtTime(.0001, context.currentTime + offset); gain.gain.exponentialRampToValueAtTime(.11, context.currentTime + offset + .012); gain.gain.exponentialRampToValueAtTime(.0001, context.currentTime + offset + duration);
+        oscillator.start(context.currentTime + offset); oscillator.stop(context.currentTime + offset + duration + .01);
+      }
+      setTimeout(() => void context.close(), 450);
+    } catch { /* Audio feedback is optional. */ }
+  }
 
   async function refreshSessionList() {
     state.sessions = await window.GdmWeighingStore.listSessions(state.database);
@@ -67,6 +89,8 @@
     state.weights = state.session ? await window.GdmWeighingStore.getWeights(state.database, state.session.id) : [];
     state.selected = null;
     state.page = 1;
+    state.sortKey = "";
+    state.selectedTrials = new Set(trialNames());
     byFeid.clear(); byUuid.clear();
     for (const plot of state.plots) { byFeid.set(normalize(plot.feid), plot); byUuid.set(normalize(plot.uuid), plot); }
     refs.plotCard.hidden = true;
@@ -83,11 +107,13 @@
   }
 
   function renderAll() {
-    const overall = window.GdmWeighingUtils.overallProgress(state.plots, state.weights);
+    renderTrialSlicer();
+    const visiblePlots = activePlots();
+    const overall = window.GdmWeighingUtils.overallProgress(visiblePlots, state.weights);
     text("header-count", `${overall.completed} of ${overall.total}`);
     text("header-percent", `${overall.percent}%`);
     refs.datasetNote.textContent = state.session
-      ? `Active session: ${state.session.name} · ${state.plots.length} imported plots · last changed ${formatDateTime(state.session.updatedAt)}`
+      ? `Active session: ${state.session.name} · ${visiblePlots.length} of ${state.plots.length} plots in the trial filter · last changed ${formatDateTime(state.session.updatedAt)}`
       : "No weighing session loaded. Import a workbook to begin.";
     refs.exportExcel.disabled = !state.session;
     refs.exportCsv.disabled = !state.session;
@@ -96,7 +122,8 @@
   }
 
   function renderRecent() {
-    const recent = [...state.weights].sort((a, b) => Date.parse(b.weighedAt || b.updatedAt) - Date.parse(a.weighedAt || a.updatedAt)).slice(0, 10);
+    const selected = state.selectedTrials;
+    const recent = state.weights.filter((record) => selected.has(record.entityName || "Unnamed trial")).sort((a, b) => Date.parse(b.weighedAt || b.updatedAt) - Date.parse(a.weighedAt || a.updatedAt)).slice(0, 10);
     refs.recentEmpty.hidden = recent.length > 0;
     refs.recentList.hidden = recent.length === 0;
     refs.recentList.innerHTML = recent.map((record) => `
@@ -114,16 +141,26 @@
     if (values.includes(previous)) select.value = previous;
   }
 
+  function renderTrialSlicer() {
+    const names = trialNames();
+    for (const selected of [...state.selectedTrials]) if (!names.includes(selected)) state.selectedTrials.delete(selected);
+    refs.trialSlicerOptions.innerHTML = names.length ? names.map((name) => `<label><input type="checkbox" value="${escapeHtml(name)}" ${state.selectedTrials.has(name) ? "checked" : ""} /><span>${escapeHtml(name)}</span></label>`).join("") : '<p class="table-empty">No trials loaded.</p>';
+    const count = state.selectedTrials.size;
+    refs.trialSlicerButton.textContent = !names.length ? "Trials: None" : count === names.length ? "Trials: All" : `Trials: ${count} of ${names.length}`;
+    refs.trialSlicerButton.disabled = !names.length;
+  }
+
   function renderDashboard() {
-    const overall = window.GdmWeighingUtils.overallProgress(state.plots, state.weights);
+    const visiblePlots = activePlots();
+    const overall = window.GdmWeighingUtils.overallProgress(visiblePlots, state.weights);
     text("summary-total", overall.total); text("summary-weighed", overall.completed); text("summary-pending", overall.remaining); text("summary-percent", `${overall.percent}%`);
     $("summary-progress").style.width = `${overall.percent}%`;
-    const trials = window.GdmWeighingUtils.groupProgress(state.plots, state.weights, "trial");
-    const locations = window.GdmWeighingUtils.groupProgress(state.plots, state.weights, "location");
+    const trials = window.GdmWeighingUtils.groupProgress(visiblePlots, state.weights, "trial");
+    const locations = window.GdmWeighingUtils.groupProgress(visiblePlots, state.weights, "location");
     $("trial-donuts").innerHTML = donutCards(trials);
     $("location-donuts").innerHTML = donutCards(locations);
-    fillFilter(refs.trialFilter, [...new Set(state.plots.map((plot) => plot.entityName).filter(Boolean))].sort(), "All trials");
-    fillFilter(refs.locationFilter, [...new Set(state.plots.map((plot) => plot.location).filter(Boolean))].sort(), "All locations");
+    fillFilter(refs.trialFilter, [...new Set(visiblePlots.map((plot) => plot.entityName).filter(Boolean))].sort(), "All trials");
+    fillFilter(refs.locationFilter, [...new Set(visiblePlots.map((plot) => plot.location).filter(Boolean))].sort(), "All locations");
     renderTable();
   }
 
@@ -133,12 +170,24 @@
     const trial = refs.trialFilter.value;
     const location = refs.locationFilter.value;
     const status = refs.statusFilter.value;
-    const filtered = state.plots.filter((plot) => {
+    const filtered = activePlots().filter((plot) => {
       const weighed = records.has(normalize(plot.uuid));
       const haystack = normalize([plot.feid, plot.uuid, plot.obsName, plot.entityName, plot.gerName, plot.location].join(" "));
       return (!search || haystack.includes(search)) && (!trial || plot.entityName === trial) && (!location || plot.location === location)
         && (!status || (status === "weighed" ? weighed : !weighed));
     });
+    if (state.sortKey) {
+      const collator = new Intl.Collator("en-US", { numeric: true, sensitivity: "base" });
+      filtered.sort((left, right) => {
+        const leftRecord = records.get(normalize(left.uuid));
+        const rightRecord = records.get(normalize(right.uuid));
+        const value = (plot, record) => state.sortKey === "status" ? (record ? "Weighed" : "Pending") : state.sortKey === "weight" ? (record?.weight ?? Number.POSITIVE_INFINITY) : state.sortKey === "weighedAt" ? (record?.weighedAt || record?.updatedAt || "") : (plot[state.sortKey] ?? "");
+        const a = value(left, leftRecord); const b = value(right, rightRecord);
+        const result = typeof a === "number" && typeof b === "number" ? a - b : collator.compare(String(a), String(b));
+        return state.sortDirection === "desc" ? -result : result;
+      });
+    }
+    state.filteredPlots = filtered;
     const pages = Math.max(Math.ceil(filtered.length / PAGE_SIZE), 1);
     state.page = Math.min(Math.max(state.page, 1), pages);
     const start = (state.page - 1) * PAGE_SIZE;
@@ -152,6 +201,16 @@
     refs.pageNumber.textContent = `Page ${state.page} of ${pages}`;
     refs.pagePrev.disabled = state.page <= 1;
     refs.pageNext.disabled = state.page >= pages;
+    refs.pageSummaryTop.textContent = refs.pageSummary.textContent;
+    refs.pageNumberTop.textContent = refs.pageNumber.textContent;
+    refs.pagePrevTop.disabled = refs.pagePrev.disabled;
+    refs.pageNextTop.disabled = refs.pageNext.disabled;
+    refs.dashboardExportExcel.disabled = !state.session || !filtered.length;
+    refs.dashboardExportCsv.disabled = !state.session || !filtered.length;
+    document.querySelectorAll("[data-sort]").forEach((button) => {
+      if (button.dataset.sort === state.sortKey) button.dataset.direction = state.sortDirection;
+      else delete button.dataset.direction;
+    });
   }
 
   function selectPlot(plot) {
@@ -215,9 +274,11 @@
     finally { refs.importData.disabled = false; refs.importData.textContent = "⇧ Import Excel / CSV"; refs.dataFile.value = ""; }
   }
 
-  function exportData(format) {
+  function exportData(format, filteredOnly = false) {
     if (!state.session) { showToast("Load a weighing session before exporting.", true); return; }
-    try { const count = window.GdmWeighingUtils.exportSession(state.session, state.weights, format); showToast(`${count} plot records exported to ${format === "xlsx" ? "Excel" : "CSV"}.`); }
+    const exportPlots = filteredOnly ? state.filteredPlots : state.plots;
+    if (!exportPlots.length) { showToast("No plot records match the current filters.", true); return; }
+    try { const count = window.GdmWeighingUtils.exportSession(state.session, state.weights, format, exportPlots); showToast(`${count} ${filteredOnly ? "filtered " : ""}plot records exported to ${format === "xlsx" ? "Excel" : "CSV"}.`); }
     catch (error) { showToast(error instanceof Error ? error.message : "Could not export the session.", true); }
   }
 
@@ -231,7 +292,7 @@
     state.rawScaleWeight = rawValue;
     const value = rawValue / (10 ** state.scaleExponent);
     refs.scaleWeight.textContent = formatNumber(value); refs.scaleWeight.classList.add("is-live");
-    const factor = state.scaleExponent ? ` · ÷ 10^${state.scaleExponent}` : "";
+    const factor = state.scaleExponent ? ` · ${scaleFactorLabel()}` : "";
     refs.scaleReadingNote.textContent = state.selected ? `PW filled automatically${factor}` : `Scan a plot to apply${factor}`;
     refs.scaleWeight.title = `Raw reading: ${formatNumber(rawValue)}${rawLine ? ` (${String(rawLine).trim()})` : ""}`;
     if (state.selected) refs.weight.value = String(value);
@@ -285,19 +346,38 @@
     const selectedCode = state.selected ? normalize(refs.scanMode.value === "uuid" ? state.selected.uuid : state.selected.feid) : "";
     if (state.selected && (!code || code === selectedCode)) { void saveCurrentWeight(); return; }
     const plot = refs.scanMode.value === "uuid" ? byUuid.get(code) : byFeid.get(code);
-    if (!plot) { state.selected = null; refs.plotCard.hidden = true; showScanError(`${refs.scanMode.value.toUpperCase()} was not found in this session.`); showToast("Plot not found.", true); return; }
+    if (!plot || !state.selectedTrials.has(plot.entityName || "Unnamed trial")) { state.selected = null; refs.plotCard.hidden = true; playScanTone("attention"); showScanError(plot ? "This plot belongs to a trial excluded by the current trial filter." : `${refs.scanMode.value.toUpperCase()} was not found in this session.`); showToast(plot ? "Plot excluded by the trial filter." : "Plot not found.", true); return; }
+    playScanTone(weightsMap().has(normalize(plot.uuid)) ? "existing" : "found");
     selectPlot(plot);
   });
   refs.scanMode.addEventListener("change", () => { refs.scanValue.placeholder = refs.scanMode.value === "feid" ? "Scan or enter the FEID" : "Scan or enter the UUID"; refs.scanValue.value = ""; refs.scanError.hidden = true; refs.scanValue.focus(); });
   refs.weightForm.addEventListener("submit", (event) => { event.preventDefault(); void saveCurrentWeight(); });
   refs.scaleFactor.value = String(state.scaleExponent);
-  refs.scaleFactor.addEventListener("change", () => { state.scaleExponent = Number(refs.scaleFactor.value); localStorage.setItem(SCALE_EXPONENT_KEY, String(state.scaleExponent)); if (state.rawScaleWeight !== null) applyScaleWeight(state.rawScaleWeight, ""); showToast(state.scaleExponent ? `Scale divisor applied: reading ÷ 10^${state.scaleExponent}.` : "Scale divisor removed."); });
+  refs.scaleFactor.addEventListener("change", () => { state.scaleExponent = Number(refs.scaleFactor.value); localStorage.setItem(SCALE_EXPONENT_KEY, String(state.scaleExponent)); if (state.rawScaleWeight !== null) applyScaleWeight(state.rawScaleWeight, ""); showToast(state.scaleExponent ? `Scale factor applied: reading ${scaleFactorLabel()}.` : "Raw scale value selected."); });
   refs.connectScale.addEventListener("click", () => void toggleScaleConnection());
   refs.importData.addEventListener("click", () => refs.dataFile.click());
   refs.dataFile.addEventListener("change", () => { const [file] = refs.dataFile.files || []; if (file) void importFile(file); });
   refs.exportExcel.addEventListener("click", () => exportData("xlsx"));
   refs.exportCsv.addEventListener("click", () => exportData("csv"));
+  refs.dashboardExportExcel.addEventListener("click", () => exportData("xlsx", true));
+  refs.dashboardExportCsv.addEventListener("click", () => exportData("csv", true));
   refs.sessionSelect.addEventListener("change", () => void setActiveSession(refs.sessionSelect.value));
+  refs.trialSlicerButton.addEventListener("click", () => {
+    refs.trialSlicerMenu.hidden = !refs.trialSlicerMenu.hidden;
+    refs.trialSlicerButton.setAttribute("aria-expanded", String(!refs.trialSlicerMenu.hidden));
+  });
+  refs.trialSlicerOptions.addEventListener("change", (event) => {
+    const checkbox = event.target.closest('input[type="checkbox"]');
+    if (!checkbox) return;
+    if (checkbox.checked) state.selectedTrials.add(checkbox.value); else state.selectedTrials.delete(checkbox.value);
+    if (state.selected && !state.selectedTrials.has(state.selected.entityName || "Unnamed trial")) clearSelection();
+    state.page = 1; renderAll();
+  });
+  refs.trialSelectAll.addEventListener("click", () => { state.selectedTrials = new Set(trialNames()); state.page = 1; renderAll(); });
+  refs.trialClearAll.addEventListener("click", () => { state.selectedTrials.clear(); clearSelection(); state.page = 1; renderAll(); });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".trial-slicer")) { refs.trialSlicerMenu.hidden = true; refs.trialSlicerButton.setAttribute("aria-expanded", "false"); }
+  });
   refs.newSession.addEventListener("click", async () => {
     try {
       if (!state.session) { refs.dataFile.click(); return; }
@@ -326,6 +406,14 @@
   [refs.tableSearch, refs.trialFilter, refs.locationFilter, refs.statusFilter].forEach((control) => control.addEventListener("input", () => { state.page = 1; renderTable(); }));
   refs.pagePrev.addEventListener("click", () => { state.page -= 1; renderTable(); });
   refs.pageNext.addEventListener("click", () => { state.page += 1; renderTable(); });
+  refs.pagePrevTop.addEventListener("click", () => { state.page -= 1; renderTable(); });
+  refs.pageNextTop.addEventListener("click", () => { state.page += 1; renderTable(); });
+  document.querySelectorAll("[data-sort]").forEach((button) => button.addEventListener("click", () => {
+    const key = button.dataset.sort;
+    if (state.sortKey === key) state.sortDirection = state.sortDirection === "asc" ? "desc" : "asc";
+    else { state.sortKey = key; state.sortDirection = "asc"; }
+    state.page = 1; renderTable();
+  }));
 
   if (!("serial" in navigator)) refs.serialHelp.textContent = "COM connection is not available in this browser. Open the app in Google Chrome or Microsoft Edge.";
   navigator.serial?.addEventListener("disconnect", (event) => { if (event.target === state.serialPort || event.port === state.serialPort) { void disconnectScale(true); showToast("The scale was disconnected from the computer.", true); } });
