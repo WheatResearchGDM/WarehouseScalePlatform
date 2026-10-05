@@ -9,11 +9,13 @@
     serialPort: null, serialReader: null, readLoop: null, keepReading: false, serialBuffer: "",
     serialFlushTimer: null, rawScaleWeight: null, scaleExponent: loadScaleExponent(), decimalPlaces: loadDecimalPlaces(), page: 1,
     exactPendingWeight: null, weightEdited: false,
+    scanAlert: null,
     selectedTrials: new Set(), sortKey: "", sortDirection: "asc", filteredPlots: [],
   };
   const byFeid = new Map();
   const byUuid = new Map();
   let toastTimer;
+  let scanAudioContext;
   const $ = (id) => document.getElementById(id);
   const refs = {
     sessionSelect: $("session-select"), renameSession: $("rename-session"), deleteSession: $("delete-session"), newSession: $("new-session"),
@@ -23,6 +25,7 @@
     scanForm: $("scan-form"), scanMode: $("scan-mode"), scanValue: $("scan-value"), scanError: $("scan-error"),
     plotCard: $("plot-card"), weightForm: $("weight-form"), weight: $("plot-weight"), saveButton: $("save-button"), existingBadge: $("existing-badge"),
     recentList: $("recent-list"), recentEmpty: $("recent-empty"), toast: $("toast"),
+    scanAlert: $("scan-alert"), scanAlertTitle: $("scan-alert-title"), scanAlertMessage: $("scan-alert-message"), scanAlertAction: $("scan-alert-action"),
     connectScale: $("connect-scale"), baudRate: $("baud-rate"), scaleFactor: $("scale-factor"), decimalPlaces: $("decimal-places"), scaleStatus: $("scale-status"), scaleWeight: $("scale-weight"), scaleReadingNote: $("scale-reading-note"), serialHelp: $("serial-help"),
     tableSearch: $("table-search"), trialFilter: $("trial-filter"), locationFilter: $("location-filter"), statusFilter: $("status-filter"), tableBody: $("plot-table-body"),
     pagePrev: $("page-prev"), pageNext: $("page-next"), pageNumber: $("page-number"), pageSummary: $("page-summary"), tableCount: $("table-count"),
@@ -43,6 +46,7 @@
   function formatNumber(value, places = state.decimalPlaces) { return new Intl.NumberFormat("en-US", { minimumFractionDigits: places, maximumFractionDigits: places }).format(value); }
   function formatInputNumber(value, places = state.decimalPlaces) { return new Intl.NumberFormat("en-US", { useGrouping: false, minimumFractionDigits: places, maximumFractionDigits: places }).format(value); }
   function formatRawNumber(value) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 12 }).format(value); }
+  function plotDisplayName(plot) { const name = plot.obsName || plot.feid || "—"; return /^plot\b/i.test(name) ? name : `Plot ${name}`; }
   function formatDateTime(value) {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? "Unavailable" : new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(date);
@@ -61,6 +65,20 @@
     refs.scanError.hidden = false;
     refs.scanValue.focus(); refs.scanValue.select();
   }
+  function closeScanAlert() {
+    state.scanAlert = null;
+    refs.scanAlert.hidden = true;
+    setTimeout(() => { refs.scanValue.focus(); refs.scanValue.select(); }, 0);
+  }
+  function showScanAlert(kind, title, message, actionLabel) {
+    state.scanAlert = kind;
+    refs.scanAlert.className = `scan-alert scan-alert--${kind}`;
+    refs.scanAlertTitle.textContent = title;
+    refs.scanAlertMessage.textContent = message;
+    refs.scanAlertAction.textContent = actionLabel;
+    refs.scanAlert.hidden = false;
+    setTimeout(() => refs.scanAlertAction.focus(), 0);
+  }
   function weightsMap() { return window.GdmWeighingUtils.byUuid(state.weights); }
   function trialNames() { return [...new Set(state.plots.map((plot) => plot.entityName || "Unnamed trial"))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })); }
   function activePlots() { return state.plots.filter((plot) => state.selectedTrials.has(plot.entityName || "Unnamed trial")); }
@@ -70,15 +88,20 @@
     try {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextClass) return;
-      const context = new AudioContextClass();
-      const patterns = kind === "found" ? [[740, 0, .08], [988, .09, .09]] : kind === "existing" ? [[520, 0, .11], [440, .12, .1]] : [[240, 0, .12], [170, .14, .15]];
-      const gain = context.createGain(); gain.gain.setValueAtTime(.0001, context.currentTime); gain.connect(context.destination);
+      const context = scanAudioContext || new AudioContextClass();
+      scanAudioContext = context;
+      if (context.state === "suspended") void context.resume();
+      const patterns = kind === "found"
+        ? [[720, 0, .32], [980, .36, .34]]
+        : kind === "existing"
+          ? [[520, 0, .45], [400, .58, .52]]
+          : [[240, 0, .38], [165, .48, .4], [240, .98, .42]];
       for (const [frequency, offset, duration] of patterns) {
-        const oscillator = context.createOscillator(); oscillator.type = "sine"; oscillator.frequency.value = frequency; oscillator.connect(gain);
-        gain.gain.setValueAtTime(.0001, context.currentTime + offset); gain.gain.exponentialRampToValueAtTime(.11, context.currentTime + offset + .012); gain.gain.exponentialRampToValueAtTime(.0001, context.currentTime + offset + duration);
+        const gain = context.createGain();
+        const oscillator = context.createOscillator(); oscillator.type = "sine"; oscillator.frequency.value = frequency; oscillator.connect(gain); gain.connect(context.destination);
+        gain.gain.setValueAtTime(.0001, context.currentTime + offset); gain.gain.exponentialRampToValueAtTime(.18, context.currentTime + offset + .025); gain.gain.exponentialRampToValueAtTime(.0001, context.currentTime + offset + duration);
         oscillator.start(context.currentTime + offset); oscillator.stop(context.currentTime + offset + duration + .01);
       }
-      setTimeout(() => void context.close(), 450);
     } catch { /* Audio feedback is optional. */ }
   }
 
@@ -97,6 +120,8 @@
     state.plots = state.session?.plots || [];
     state.weights = state.session ? await window.GdmWeighingStore.getWeights(state.database, state.session.id) : [];
     state.selected = null;
+    state.scanAlert = null;
+    refs.scanAlert.hidden = true;
     state.exactPendingWeight = null;
     state.weightEdited = false;
     state.page = 1;
@@ -370,15 +395,31 @@
   refs.scanForm.addEventListener("submit", (event) => {
     event.preventDefault();
     if (!state.session) { showToast("Import a workbook before weighing plots.", true); return; }
+    const scannedValue = refs.scanValue.value.trim();
     const code = normalize(refs.scanValue.value);
     const selectedCode = state.selected ? normalize(refs.scanMode.value === "uuid" ? state.selected.uuid : state.selected.feid) : "";
     if (state.selected && (!code || code === selectedCode)) { void saveCurrentWeight(); return; }
     const plot = refs.scanMode.value === "uuid" ? byUuid.get(code) : byFeid.get(code);
-    if (!plot || !state.selectedTrials.has(plot.entityName || "Unnamed trial")) { state.selected = null; refs.plotCard.hidden = true; playScanTone("attention"); showScanError(plot ? "This plot belongs to a trial excluded by the current trial filter." : `${refs.scanMode.value.toUpperCase()} was not found in this session.`); showToast(plot ? "Plot excluded by the trial filter." : "Plot not found.", true); return; }
-    playScanTone(weightsMap().has(normalize(plot.uuid)) ? "existing" : "found");
+    if (!plot || !state.selectedTrials.has(plot.entityName || "Unnamed trial")) {
+      const message = plot
+        ? `${plotDisplayName(plot)} belongs to trial ${plot.entityName || "Unnamed trial"}, which is excluded by the current trial filter.`
+        : `${refs.scanMode.value.toUpperCase()} ${scannedValue || "—"} was not found in this session.`;
+      state.selected = null; state.exactPendingWeight = null; state.weightEdited = false; refs.plotCard.hidden = true; refs.weight.value = "";
+      playScanTone("attention"); showScanError(message); showScanAlert("unavailable", "Plot unavailable", message, "Scan again"); return;
+    }
+    const record = weightsMap().get(normalize(plot.uuid));
+    playScanTone(record ? "existing" : "found");
     selectPlot(plot);
+    if (record) showScanAlert("existing", "Plot already weighed", `${plotDisplayName(plot)} already has PW ${formatNumber(Number(record.weight))}. Continue only if you want to replace this value.`, "Continue");
   });
-  refs.scanMode.addEventListener("change", () => { refs.scanValue.placeholder = refs.scanMode.value === "feid" ? "Scan or enter the FEID" : "Scan or enter the UUID"; refs.scanValue.value = ""; refs.scanError.hidden = true; refs.scanValue.focus(); });
+  refs.scanMode.addEventListener("change", () => { refs.scanValue.placeholder = refs.scanMode.value === "feid" ? "Scan or enter the FEID" : "Scan or enter the UUID"; refs.scanValue.value = ""; refs.scanError.hidden = true; if (state.scanAlert) closeScanAlert(); else refs.scanValue.focus(); });
+  refs.scanAlertAction.addEventListener("click", closeScanAlert);
+  document.addEventListener("keydown", (event) => {
+    if (!state.scanAlert) return;
+    if (event.key === "Tab") { event.preventDefault(); refs.scanAlertAction.focus(); return; }
+    if (event.key !== "Enter" && event.key !== "Escape") return;
+    event.preventDefault(); event.stopPropagation(); closeScanAlert();
+  }, true);
   refs.weightForm.addEventListener("submit", (event) => { event.preventDefault(); void saveCurrentWeight(); });
   refs.weight.addEventListener("input", () => { state.weightEdited = true; state.exactPendingWeight = null; });
   refs.scaleFactor.value = String(state.scaleExponent);

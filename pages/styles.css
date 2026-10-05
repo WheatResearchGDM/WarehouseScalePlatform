@@ -155,6 +155,22 @@ tbody tr:nth-child(even) { background: #f7fafd; }
 .pagination--top { margin: 0 0 12px; }
 .pagination > div { display: flex; align-items: center; gap: 10px; }
 .pagination button { min-height: 36px; padding: 0 12px; border: 1px solid #c6d7e6; border-radius: 5px; background: #fff; color: #315b86; font-weight: 750; }
+.scan-alert { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 16px; background: rgba(16,40,64,.66); }
+.scan-alert[hidden] { display: none; }
+.scan-alert__dialog { width: min(520px,100%); overflow: hidden; border: 2px solid; border-radius: 12px; background: #fff; box-shadow: 0 24px 70px rgba(10,31,53,.4); }
+.scan-alert__hero { display: grid; justify-items: center; padding: 28px 24px; text-align: center; }
+.scan-alert__icon { width: 64px; height: 64px; display: grid; place-items: center; border: 5px solid currentColor; border-radius: 50%; font-size: 38px; font-weight: 950; line-height: 1; }
+.scan-alert__hero h2 { margin: 12px 0 0; font-size: 30px; font-weight: 950; }
+.scan-alert__body { padding: 24px; text-align: center; }
+.scan-alert__body p { margin: 0; color: #284966; font-size: 18px; font-weight: 700; line-height: 1.55; }
+.scan-alert__body button { min-width: 176px; height: 52px; margin-top: 24px; border: 0; border-radius: 6px; color: #fff; font-size: 16px; font-weight: 900; }
+.scan-alert__body small { display: block; margin-top: 12px; color: #728398; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
+.scan-alert--existing .scan-alert__dialog { border-color: #d18b16; }
+.scan-alert--existing .scan-alert__hero { background: #fff4d6; color: #754c00; }
+.scan-alert--existing .scan-alert__body button { background: #c98212; }
+.scan-alert--unavailable .scan-alert__dialog { border-color: #b42318; }
+.scan-alert--unavailable .scan-alert__hero { background: #fff0ee; color: #962b20; }
+.scan-alert--unavailable .scan-alert__body button { background: #b42318; }
 .toast { position: fixed; right: 24px; bottom: 24px; z-index: 20; max-width: min(520px,calc(100vw - 48px)); padding: 14px 18px; border-radius: 7px; background: #173f66; color: #fff; box-shadow: 0 12px 30px rgba(19,48,78,.28); font-weight: 750; }
 .toast--error { background: #a53c32; }
 @media (max-width: 980px) {

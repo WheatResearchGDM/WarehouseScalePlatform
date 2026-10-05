@@ -36,6 +36,7 @@ type ProgressItem = {
 };
 type OverallProgress = { total: number; completed: number; remaining: number; percent: number };
 type MergePlan = { ready: ImportedWeight[]; unresolved: ImportedWeight[]; ignored: number; unchanged: number; keptCurrent: number };
+type ScanAlert = { kind: "existing" | "unavailable"; title: string; message: string; actionLabel: string };
 type StoreApi = {
   init(): Promise<{ database: IDBDatabase; sessions: WeighingSession[]; activeSessionId: string | null }>;
   listSessions(database: IDBDatabase): Promise<WeighingSession[]>;
@@ -100,6 +101,7 @@ function parseWeight(value: string) { const clean = value.trim(); return clean ?
 function formatNumber(value: number, decimalPlaces = 0) { return new Intl.NumberFormat("en-US", { minimumFractionDigits: decimalPlaces, maximumFractionDigits: decimalPlaces }).format(value); }
 function formatInputNumber(value: number, decimalPlaces = 0) { return new Intl.NumberFormat("en-US", { useGrouping: false, minimumFractionDigits: decimalPlaces, maximumFractionDigits: decimalPlaces }).format(value); }
 function formatRawNumber(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 12 }).format(value); }
+function plotDisplayName(plot: Plot) { const name = plot.obsName || plot.feid || "—"; return /^plot\b/i.test(name) ? name : `Plot ${name}`; }
 function formatDateTime(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "Unavailable" : new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(date);
@@ -113,19 +115,25 @@ function parseScaleWeight(rawLine: string) {
 }
 function superscript(value: number) { return String(value).replace(/\d/g, (digit) => "⁰¹²³⁴⁵⁶⁷⁸⁹"[Number(digit)]); }
 function scaleFactorLabel(exponent: number) { return exponent < 0 ? `× 10${superscript(Math.abs(exponent))}` : exponent > 0 ? `÷ 10${superscript(exponent)}` : "raw value"; }
+let scanAudioContext: AudioContext | null = null;
 function playScanTone(kind: "found" | "existing" | "attention") {
   try {
     const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextClass) return;
-    const context = new AudioContextClass();
-    const patterns = kind === "found" ? [[740, 0, .08], [988, .09, .09]] : kind === "existing" ? [[520, 0, .11], [440, .12, .1]] : [[240, 0, .12], [170, .14, .15]];
-    const gain = context.createGain(); gain.gain.setValueAtTime(.0001, context.currentTime); gain.connect(context.destination);
+    const context = scanAudioContext ?? new AudioContextClass();
+    scanAudioContext = context;
+    if (context.state === "suspended") void context.resume();
+    const patterns = kind === "found"
+      ? [[720, 0, .32], [980, .36, .34]]
+      : kind === "existing"
+        ? [[520, 0, .45], [400, .58, .52]]
+        : [[240, 0, .38], [165, .48, .4], [240, .98, .42]];
     for (const [frequency, offset, duration] of patterns) {
-      const oscillator = context.createOscillator(); oscillator.type = "sine"; oscillator.frequency.value = frequency; oscillator.connect(gain);
-      gain.gain.setValueAtTime(.0001, context.currentTime + offset); gain.gain.exponentialRampToValueAtTime(.11, context.currentTime + offset + .012); gain.gain.exponentialRampToValueAtTime(.0001, context.currentTime + offset + duration);
+      const gain = context.createGain();
+      const oscillator = context.createOscillator(); oscillator.type = "sine"; oscillator.frequency.value = frequency; oscillator.connect(gain); gain.connect(context.destination);
+      gain.gain.setValueAtTime(.0001, context.currentTime + offset); gain.gain.exponentialRampToValueAtTime(.18, context.currentTime + offset + .025); gain.gain.exponentialRampToValueAtTime(.0001, context.currentTime + offset + duration);
       oscillator.start(context.currentTime + offset); oscillator.stop(context.currentTime + offset + duration + .01);
     }
-    window.setTimeout(() => void context.close(), 450);
   } catch { /* Audio feedback is optional. */ }
 }
 
@@ -197,6 +205,7 @@ export default function Home() {
   const [scanMode, setScanMode] = useState<"feid" | "uuid">("feid");
   const [scanValue, setScanValue] = useState("");
   const [scanError, setScanError] = useState("");
+  const [scanAlert, setScanAlert] = useState<ScanAlert | null>(null);
   const [selected, setSelected] = useState<Plot | null>(null);
   const [weightValue, setWeightValue] = useState("");
   const [saving, setSaving] = useState(false);
@@ -217,6 +226,7 @@ export default function Home() {
 
   const fileRef = useRef<HTMLInputElement>(null);
   const scanRef = useRef<HTMLInputElement>(null);
+  const scanAlertButtonRef = useRef<HTMLButtonElement>(null);
   const weightRef = useRef<HTMLInputElement>(null);
   const selectedRef = useRef<Plot | null>(null);
   const serialPortRef = useRef<SerialPortLike | null>(null);
@@ -231,6 +241,23 @@ export default function Home() {
   const weightEditedRef = useRef(false);
 
   useEffect(() => { selectedRef.current = selected; }, [selected]);
+
+  const closeScanAlert = useCallback(() => {
+    setScanAlert(null);
+    window.setTimeout(() => { scanRef.current?.focus(); scanRef.current?.select(); }, 0);
+  }, []);
+
+  useEffect(() => {
+    if (!scanAlert) return;
+    window.setTimeout(() => scanAlertButtonRef.current?.focus(), 0);
+    const closeOnKeyboard = (event: KeyboardEvent) => {
+      if (event.key === "Tab") { event.preventDefault(); scanAlertButtonRef.current?.focus(); return; }
+      if (event.key !== "Enter" && event.key !== "Escape") return;
+      event.preventDefault(); event.stopPropagation(); closeScanAlert();
+    };
+    window.addEventListener("keydown", closeOnKeyboard, true);
+    return () => window.removeEventListener("keydown", closeOnKeyboard, true);
+  }, [scanAlert, closeScanAlert]);
 
   const byFeid = useMemo(() => new Map(plots.map((plot) => [normalize(plot.feid), plot])), [plots]);
   const byUuid = useMemo(() => new Map(plots.map((plot) => [normalize(plot.uuid), plot])), [plots]);
@@ -275,7 +302,7 @@ export default function Home() {
     const nextWeights = nextSession ? await store.getWeights(db, nextSession.id) : [];
     const nextPlots = nextSession?.plots ?? [];
     exactPendingWeightRef.current = null; weightEditedRef.current = false;
-    setSession(nextSession); setPlots(nextPlots); setWeights(nextWeights); setSelected(null);
+    setSession(nextSession); setPlots(nextPlots); setWeights(nextWeights); setSelected(null); setScanAlert(null);
     setSelectedTrials([...new Set(nextPlots.map((plot) => plot.entityName || "Unnamed trial"))]); setSort({ key: "", direction: "asc" });
     setScanValue(""); setWeightValue(""); setPage(1); setSessions(await store.listSessions(db));
     window.setTimeout(() => scanRef.current?.focus(), 0);
@@ -379,9 +406,21 @@ export default function Home() {
     const currentCode = selected ? normalize(scanMode === "feid" ? selected.feid : selected.uuid) : "";
     if (selected && (!code || code === currentCode)) { void saveCurrentWeight(); return; }
     const plot = scanMode === "feid" ? byFeid.get(code) : byUuid.get(code);
-    if (!plot || !selectedTrialSet.has(plot.entityName || "Unnamed trial")) { setSelected(null); playScanTone("attention"); setScanError(plot ? "This plot belongs to a trial excluded by the current trial filter." : `${scanMode.toUpperCase()} was not found in this session.`); toast.error(plot ? "Plot excluded by the trial filter." : "Plot not found."); scanRef.current?.select(); return; }
-    playScanTone(weightsByUuid.has(normalize(plot.uuid)) ? "existing" : "found");
+    if (!plot || !selectedTrialSet.has(plot.entityName || "Unnamed trial")) {
+      const message = plot
+        ? `${plotDisplayName(plot)} belongs to trial ${plot.entityName || "Unnamed trial"}, which is excluded by the current trial filter.`
+        : `${scanMode.toUpperCase()} ${scanValue.trim() || "—"} was not found in this session.`;
+      setSelected(null); setWeightValue(""); exactPendingWeightRef.current = null; weightEditedRef.current = false;
+      playScanTone("attention"); setScanError(message); setScanAlert({ kind: "unavailable", title: "Plot unavailable", message, actionLabel: "Scan again" }); return;
+    }
+    const record = weightsByUuid.get(normalize(plot.uuid));
+    playScanTone(record ? "existing" : "found");
     selectPlot(plot);
+    if (record) setScanAlert({
+      kind: "existing", title: "Plot already weighed",
+      message: `${plotDisplayName(plot)} already has PW ${formatNumber(record.weight, decimalPlaces)}. Continue only if you want to replace this value.`,
+      actionLabel: "Continue",
+    });
   }
   async function saveCurrentWeight() {
     if (!database || !session || !selected || !window.GdmWeighingStore || saving) return;
@@ -485,6 +524,19 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-[#edf3f8] pb-10 text-[#17365a]">
       <Toaster position="top-center" richColors />
+      {scanAlert && <div className="fixed inset-0 z-[100] grid place-items-center bg-[#102840]/65 p-4" aria-hidden="false">
+        <section role="alertdialog" aria-modal="true" aria-labelledby="scan-alert-title" aria-describedby="scan-alert-message" className={`w-full max-w-lg overflow-hidden rounded-xl border-2 bg-white shadow-[0_24px_70px_rgba(10,31,53,.4)] ${scanAlert.kind === "existing" ? "border-[#d18b16]" : "border-[#b42318]"}`}>
+          <div className={`grid justify-items-center px-6 py-7 text-center ${scanAlert.kind === "existing" ? "bg-[#fff4d6] text-[#754c00]" : "bg-[#fff0ee] text-[#962b20]"}`}>
+            <CircleAlert className="size-16" strokeWidth={2.4} />
+            <h2 id="scan-alert-title" className="mt-3 text-3xl font-black">{scanAlert.title}</h2>
+          </div>
+          <div className="px-6 py-6 text-center">
+            <p id="scan-alert-message" className="text-lg font-semibold leading-relaxed text-[#284966]">{scanAlert.message}</p>
+            <Button ref={scanAlertButtonRef} type="button" onClick={closeScanAlert} className={`mt-6 h-13 min-w-44 rounded-md px-8 text-base font-black text-white ${scanAlert.kind === "existing" ? "bg-[#c98212] hover:bg-[#ac6d0d]" : "bg-[#b42318] hover:bg-[#921f16]"}`}>{scanAlert.actionLabel}</Button>
+            <p className="mt-3 text-xs font-bold uppercase tracking-[.08em] text-[#728398]">Press Enter or click the button to continue</p>
+          </div>
+        </section>
+      </div>}
       <header className="mx-3 mt-2 rounded-lg bg-[#1f4269] text-white shadow-[0_14px_28px_rgba(24,55,88,0.17)]">
         <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-6 px-5 py-[18px] sm:px-9">
           <div className="flex items-center gap-3"><img src="/gdm-logo.svg" alt="GDM" className="h-12 w-[68px] object-contain" /><div><p className="text-[22px] font-black tracking-[-0.02em]">Trial Weighing</p><p className="text-sm text-white/75">GDM Field Operations · Wheat</p></div></div>
@@ -543,7 +595,7 @@ export default function Home() {
             <p className="mt-2 text-xs text-[#647a90]">Connect the scale, select FEID or UUID, then scan a plot to fill PW automatically.</p>
 
             <form onSubmit={handleScan} className="mt-4 grid gap-3 rounded-[5px] border border-[#cbdcec] bg-[#f8fbfe] p-3.5 sm:grid-cols-[190px_minmax(0,1fr)]">
-              <label><span className="mb-2 block text-sm font-bold text-[#365b80]">Identifier</span><NativeSelect value={scanMode} onChange={(event) => { setScanMode(event.target.value as "feid" | "uuid"); setSelected(null); setScanError(""); setScanValue(""); scanRef.current?.focus(); }} className="h-14 w-full rounded-[5px] border-2 border-[#d1dfed] bg-white px-4 font-bold"><NativeSelectOption value="feid">Plot FEID</NativeSelectOption><NativeSelectOption value="uuid">Plot UUID</NativeSelectOption></NativeSelect></label>
+              <label><span className="mb-2 block text-sm font-bold text-[#365b80]">Identifier</span><NativeSelect value={scanMode} onChange={(event) => { setScanMode(event.target.value as "feid" | "uuid"); setSelected(null); setScanAlert(null); setScanError(""); setScanValue(""); scanRef.current?.focus(); }} className="h-14 w-full rounded-[5px] border-2 border-[#d1dfed] bg-white px-4 font-bold"><NativeSelectOption value="feid">Plot FEID</NativeSelectOption><NativeSelectOption value="uuid">Plot UUID</NativeSelectOption></NativeSelect></label>
               <label><span className="mb-2 block text-sm font-bold text-[#365b80]">Scanned code</span><div className="relative"><Barcode className="absolute left-4 top-1/2 size-6 -translate-y-1/2 text-[#6e94b9]" /><Input ref={scanRef} autoFocus value={scanValue} onChange={(event) => setScanValue(event.target.value)} className="h-14 rounded-[5px] border-2 border-[#d1dfed] bg-white pl-13 font-mono text-lg font-semibold" placeholder={scanMode === "feid" ? "Scan or enter the FEID" : "Scan or enter the UUID"} autoComplete="off" spellCheck={false} /></div></label>
             </form>
             <p className="mt-3 text-sm text-[#657b90]"><strong>Quick flow:</strong> scan to load a plot. When PW is filled, press Enter or scan the same plot again to save.</p>
