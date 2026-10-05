@@ -227,6 +227,7 @@ export default function Home() {
   const fileRef = useRef<HTMLInputElement>(null);
   const scanRef = useRef<HTMLInputElement>(null);
   const scanAlertButtonRef = useRef<HTMLButtonElement>(null);
+  const scanAlertUpdateButtonRef = useRef<HTMLButtonElement>(null);
   const scanAlertRef = useRef<ScanAlert | null>(null);
   const scanAlertOpenedAtRef = useRef(0);
   const weightRef = useRef<HTMLInputElement>(null);
@@ -244,11 +245,22 @@ export default function Home() {
 
   useEffect(() => { selectedRef.current = selected; }, [selected]);
 
-  const closeScanAlert = useCallback(() => {
+  const closeScanAlert = useCallback((focusTarget: "scan" | "weight" = "scan") => {
     scanAlertRef.current = null;
     setScanAlert(null);
-    window.setTimeout(() => { scanRef.current?.focus(); scanRef.current?.select(); }, 0);
+    window.setTimeout(() => {
+      const target = focusTarget === "weight" ? weightRef.current : scanRef.current;
+      target?.focus(); target?.select();
+    }, 0);
   }, []);
+
+  const keepExistingWeight = useCallback(() => {
+    exactPendingWeightRef.current = null; weightEditedRef.current = false;
+    setSelected(null); setScanValue(""); setWeightValue("");
+    closeScanAlert();
+  }, [closeScanAlert]);
+
+  const updateExistingWeight = useCallback(() => closeScanAlert("weight"), [closeScanAlert]);
 
   const openScanAlert = useCallback((alert: ScanAlert) => {
     scanAlertRef.current = alert;
@@ -260,17 +272,29 @@ export default function Home() {
     if (!scanAlert) return;
     window.setTimeout(() => scanAlertButtonRef.current?.focus(), 0);
     const closeOnKeyboard = (event: KeyboardEvent) => {
-      if (event.key === "Tab") { event.preventDefault(); scanAlertButtonRef.current?.focus(); return; }
+      if (event.key === "Tab") {
+        event.preventDefault();
+        if (scanAlert.kind !== "existing") { scanAlertButtonRef.current?.focus(); return; }
+        const updateButton = scanAlertUpdateButtonRef.current; const keepButton = scanAlertButtonRef.current;
+        (document.activeElement === keepButton ? updateButton : keepButton)?.focus();
+        return;
+      }
       if (event.key === "Enter") {
         event.preventDefault(); event.stopPropagation();
         if (performance.now() - scanAlertOpenedAtRef.current < 700) return;
-        closeScanAlert(); return;
+        if (scanAlert.kind === "existing") {
+          if (document.activeElement === scanAlertUpdateButtonRef.current) updateExistingWeight(); else keepExistingWeight();
+        } else closeScanAlert();
+        return;
       }
-      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeScanAlert(); }
+      if (event.key === "Escape") {
+        event.preventDefault(); event.stopPropagation();
+        if (scanAlert.kind === "existing") keepExistingWeight(); else closeScanAlert();
+      }
     };
     window.addEventListener("keydown", closeOnKeyboard, true);
     return () => window.removeEventListener("keydown", closeOnKeyboard, true);
-  }, [scanAlert, closeScanAlert]);
+  }, [scanAlert, closeScanAlert, keepExistingWeight, updateExistingWeight]);
 
   const byFeid = useMemo(() => new Map(plots.map((plot) => [normalize(plot.feid), plot])), [plots]);
   const byUuid = useMemo(() => new Map(plots.map((plot) => [normalize(plot.uuid), plot])), [plots]);
@@ -433,8 +457,8 @@ export default function Home() {
     selectPlot(plot);
     if (record) openScanAlert({
       kind: "existing", title: "Plot already weighed",
-      message: `${plotDisplayName(plot)} already has PW ${formatNumber(record.weight, decimalPlaces)}. Continue only if you want to replace this value.`,
-      actionLabel: "Continue",
+      message: `${plotDisplayName(plot)} already has PW ${formatNumber(record.weight, decimalPlaces)}. Choose whether to update it or keep the current value.`,
+      actionLabel: "Keep current PW",
     });
   }
   async function saveCurrentWeight() {
@@ -547,8 +571,11 @@ export default function Home() {
           </div>
           <div className="px-6 py-6 text-center">
             <p id="scan-alert-message" className="text-lg font-semibold leading-relaxed text-[#284966]">{scanAlert.message}</p>
-            <Button ref={scanAlertButtonRef} type="button" onClick={closeScanAlert} className={`mt-6 h-13 min-w-44 rounded-md px-8 text-base font-black text-white ${scanAlert.kind === "existing" ? "bg-[#c98212] hover:bg-[#ac6d0d]" : "bg-[#b42318] hover:bg-[#921f16]"}`}>{scanAlert.actionLabel}</Button>
-            <p className="mt-3 text-xs font-bold uppercase tracking-[.08em] text-[#728398]">Press Enter or click the button to continue</p>
+            <div className="mt-6 flex flex-col-reverse justify-center gap-3 sm:flex-row">
+              {scanAlert.kind === "existing" && <Button ref={scanAlertUpdateButtonRef} type="button" variant="outline" onClick={updateExistingWeight} className="h-13 min-w-44 rounded-md border-2 border-[#c98212] px-6 text-base font-black text-[#8a5708] hover:bg-[#fff4d6]">Update PW</Button>}
+              <Button ref={scanAlertButtonRef} type="button" onClick={scanAlert.kind === "existing" ? keepExistingWeight : () => closeScanAlert()} className={`h-13 min-w-44 rounded-md px-6 text-base font-black text-white ${scanAlert.kind === "existing" ? "bg-[#c98212] hover:bg-[#ac6d0d]" : "bg-[#b42318] hover:bg-[#921f16]"}`}>{scanAlert.actionLabel}</Button>
+            </div>
+            <p className="mt-3 text-xs font-bold uppercase tracking-[.08em] text-[#728398]">{scanAlert.kind === "existing" ? "Enter keeps the current PW · choose Update PW to replace it" : "Press Enter or click the button to continue"}</p>
           </div>
         </section>
       </div>}

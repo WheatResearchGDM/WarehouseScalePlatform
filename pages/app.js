@@ -25,7 +25,7 @@
     scanForm: $("scan-form"), scanMode: $("scan-mode"), scanValue: $("scan-value"), scanError: $("scan-error"),
     plotCard: $("plot-card"), weightForm: $("weight-form"), weight: $("plot-weight"), saveButton: $("save-button"), existingBadge: $("existing-badge"),
     recentList: $("recent-list"), recentEmpty: $("recent-empty"), toast: $("toast"),
-    scanAlert: $("scan-alert"), scanAlertTitle: $("scan-alert-title"), scanAlertMessage: $("scan-alert-message"), scanAlertAction: $("scan-alert-action"),
+    scanAlert: $("scan-alert"), scanAlertTitle: $("scan-alert-title"), scanAlertMessage: $("scan-alert-message"), scanAlertAction: $("scan-alert-action"), scanAlertUpdate: $("scan-alert-update"), scanAlertHint: $("scan-alert-hint"),
     connectScale: $("connect-scale"), baudRate: $("baud-rate"), scaleFactor: $("scale-factor"), decimalPlaces: $("decimal-places"), scaleStatus: $("scale-status"), scaleWeight: $("scale-weight"), scaleReadingNote: $("scale-reading-note"), serialHelp: $("serial-help"),
     tableSearch: $("table-search"), trialFilter: $("trial-filter"), locationFilter: $("location-filter"), statusFilter: $("status-filter"), tableBody: $("plot-table-body"),
     pagePrev: $("page-prev"), pageNext: $("page-next"), pageNumber: $("page-number"), pageSummary: $("page-summary"), tableCount: $("table-count"),
@@ -65,10 +65,21 @@
     refs.scanError.hidden = false;
     refs.scanValue.focus(); refs.scanValue.select();
   }
-  function closeScanAlert() {
+  function closeScanAlert(focusTarget = "scan") {
     state.scanAlert = null;
     refs.scanAlert.hidden = true;
-    setTimeout(() => { refs.scanValue.focus(); refs.scanValue.select(); }, 0);
+    setTimeout(() => {
+      const target = focusTarget === "weight" ? refs.weight : refs.scanValue;
+      target.focus(); target.select();
+    }, 0);
+  }
+  function keepExistingWeight() {
+    state.selected = null; state.exactPendingWeight = null; state.weightEdited = false;
+    refs.plotCard.hidden = true; refs.scanValue.value = ""; refs.weight.value = "";
+    closeScanAlert();
+  }
+  function updateExistingWeight() {
+    closeScanAlert("weight");
   }
   function showScanAlert(kind, title, message, actionLabel) {
     state.scanAlert = kind;
@@ -76,7 +87,9 @@
     refs.scanAlert.className = `scan-alert scan-alert--${kind}`;
     refs.scanAlertTitle.textContent = title;
     refs.scanAlertMessage.textContent = message;
-    refs.scanAlertAction.textContent = actionLabel;
+    refs.scanAlertUpdate.hidden = kind !== "existing";
+    refs.scanAlertAction.textContent = kind === "existing" ? "Keep current PW" : actionLabel;
+    refs.scanAlertHint.textContent = kind === "existing" ? "Enter keeps the current PW · choose Update PW to replace it" : "Press Enter or click the button to continue";
     refs.scanAlert.hidden = false;
     setTimeout(() => refs.scanAlertAction.focus(), 0);
   }
@@ -412,19 +425,31 @@
     const record = weightsMap().get(normalize(plot.uuid));
     playScanTone(record ? "existing" : "found");
     selectPlot(plot);
-    if (record) showScanAlert("existing", "Plot already weighed", `${plotDisplayName(plot)} already has PW ${formatNumber(Number(record.weight))}. Continue only if you want to replace this value.`, "Continue");
+    if (record) showScanAlert("existing", "Plot already weighed", `${plotDisplayName(plot)} already has PW ${formatNumber(Number(record.weight))}. Choose whether to update it or keep the current value.`, "Keep current PW");
   });
   refs.scanMode.addEventListener("change", () => { refs.scanValue.placeholder = refs.scanMode.value === "feid" ? "Scan or enter the FEID" : "Scan or enter the UUID"; refs.scanValue.value = ""; refs.scanError.hidden = true; if (state.scanAlert) closeScanAlert(); else refs.scanValue.focus(); });
-  refs.scanAlertAction.addEventListener("click", closeScanAlert);
+  refs.scanAlertAction.addEventListener("click", () => { if (state.scanAlert === "existing") keepExistingWeight(); else closeScanAlert(); });
+  refs.scanAlertUpdate.addEventListener("click", updateExistingWeight);
   document.addEventListener("keydown", (event) => {
     if (!state.scanAlert) return;
-    if (event.key === "Tab") { event.preventDefault(); refs.scanAlertAction.focus(); return; }
+    if (event.key === "Tab") {
+      event.preventDefault();
+      if (state.scanAlert !== "existing") { refs.scanAlertAction.focus(); return; }
+      (document.activeElement === refs.scanAlertAction ? refs.scanAlertUpdate : refs.scanAlertAction).focus();
+      return;
+    }
     if (event.key === "Enter") {
       event.preventDefault(); event.stopPropagation();
       if (performance.now() - state.scanAlertOpenedAt < 700) return;
-      closeScanAlert(); return;
+      if (state.scanAlert === "existing") {
+        if (document.activeElement === refs.scanAlertUpdate) updateExistingWeight(); else keepExistingWeight();
+      } else closeScanAlert();
+      return;
     }
-    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeScanAlert(); }
+    if (event.key === "Escape") {
+      event.preventDefault(); event.stopPropagation();
+      if (state.scanAlert === "existing") keepExistingWeight(); else closeScanAlert();
+    }
   }, true);
   refs.weightForm.addEventListener("submit", (event) => { event.preventDefault(); void saveCurrentWeight(); });
   refs.weight.addEventListener("input", () => { state.weightEdited = true; state.exactPendingWeight = null; });

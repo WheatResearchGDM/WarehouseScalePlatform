@@ -163,11 +163,14 @@ tbody tr:nth-child(even) { background: #f7fafd; }
 .scan-alert__hero h2 { margin: 12px 0 0; font-size: 30px; font-weight: 950; }
 .scan-alert__body { padding: 24px; text-align: center; }
 .scan-alert__body p { margin: 0; color: #284966; font-size: 18px; font-weight: 700; line-height: 1.55; }
-.scan-alert__body button { min-width: 176px; height: 52px; margin-top: 24px; border: 0; border-radius: 6px; color: #fff; font-size: 16px; font-weight: 900; }
+.scan-alert__actions { display: flex; justify-content: center; gap: 12px; margin-top: 24px; }
+.scan-alert__body button { min-width: 176px; height: 52px; border: 0; border-radius: 6px; color: #fff; font-size: 16px; font-weight: 900; }
+.scan-alert__body .scan-alert__secondary { border: 2px solid #c98212; background: #fff; color: #8a5708; }
 .scan-alert__body small { display: block; margin-top: 12px; color: #728398; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
 .scan-alert--existing .scan-alert__dialog { border-color: #d18b16; }
 .scan-alert--existing .scan-alert__hero { background: #fff4d6; color: #754c00; }
 .scan-alert--existing .scan-alert__body button { background: #c98212; }
+.scan-alert--existing .scan-alert__body .scan-alert__secondary { background: #fff; color: #8a5708; }
 .scan-alert--unavailable .scan-alert__dialog { border-color: #b42318; }
 .scan-alert--unavailable .scan-alert__hero { background: #fff0ee; color: #962b20; }
 .scan-alert--unavailable .scan-alert__body button { background: #b42318; }
@@ -189,6 +192,8 @@ tbody tr:nth-child(even) { background: #f7fafd; }
   .brand strong { font-size: 19px; }
   .session-controls label { width: 100%; }
   .session-controls select { flex: 1 1 100%; max-width: none; }
+  .scan-alert__actions { flex-direction: column-reverse; }
+  .scan-alert__body button { width: 100%; }
   .tabs { width: 100%; }
   .tab { flex: 1; }
   .panel-heading { align-items: stretch; }
