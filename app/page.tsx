@@ -53,7 +53,7 @@ type UtilsApi = {
   groupProgress(plots: Plot[], weights: WeightRecord[], key: "trial" | "location"): ProgressItem[];
   overallProgress(plots: Plot[], weights: WeightRecord[]): OverallProgress;
   prepareMerge(plots: Plot[], current: WeightRecord[], imported: ImportedWeight[]): MergePlan;
-  exportSession(session: WeighingSession, weights: WeightRecord[], format: "xlsx" | "csv", plots?: Plot[]): number;
+  exportSession(session: WeighingSession, weights: WeightRecord[], format: "xlsx" | "csv", plots?: Plot[], decimalPlaces?: number): number;
 };
 type ImportApi = { parseExcelFile(file: File): Promise<ImportResult> };
 type SerialPortLike = {
@@ -72,6 +72,7 @@ declare global {
 
 const PAGE_SIZE = 100;
 const SCALE_EXPONENT_KEY = "gdm-warehouse-scale-exponent-v1";
+const DECIMAL_PLACES_KEY = "gdm-warehouse-decimal-places-v1";
 
 function loadBrowserScript(src: string, id: string) {
   return new Promise<void>((resolve, reject) => {
@@ -96,7 +97,9 @@ async function loadRuntime() {
 
 function normalize(value: unknown) { return String(value ?? "").trim().toUpperCase(); }
 function parseWeight(value: string) { const clean = value.trim(); return clean ? Number(clean.replace(",", ".")) : Number.NaN; }
-function formatNumber(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 }).format(value); }
+function formatNumber(value: number, decimalPlaces = 0) { return new Intl.NumberFormat("en-US", { minimumFractionDigits: decimalPlaces, maximumFractionDigits: decimalPlaces }).format(value); }
+function formatInputNumber(value: number, decimalPlaces = 0) { return new Intl.NumberFormat("en-US", { useGrouping: false, minimumFractionDigits: decimalPlaces, maximumFractionDigits: decimalPlaces }).format(value); }
+function formatRawNumber(value: number) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 12 }).format(value); }
 function formatDateTime(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "Unavailable" : new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(date);
@@ -108,7 +111,8 @@ function parseScaleWeight(rawLine: string) {
   const value = Number(matches[matches.length - 1].replace(",", "."));
   return Number.isFinite(value) && value >= 0 ? value : null;
 }
-function scaleFactorLabel(exponent: number) { return exponent < 0 ? `× 10^${Math.abs(exponent)}` : exponent > 0 ? `÷ 10^${exponent}` : "raw value"; }
+function superscript(value: number) { return String(value).replace(/\d/g, (digit) => "⁰¹²³⁴⁵⁶⁷⁸⁹"[Number(digit)]); }
+function scaleFactorLabel(exponent: number) { return exponent < 0 ? `× 10${superscript(Math.abs(exponent))}` : exponent > 0 ? `÷ 10${superscript(exponent)}` : "raw value"; }
 function playScanTone(kind: "found" | "existing" | "attention") {
   try {
     const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -205,6 +209,7 @@ export default function Home() {
   const [sort, setSort] = useState<{ key: string; direction: "asc" | "desc" }>({ key: "", direction: "asc" });
   const [baudRate, setBaudRate] = useState("9600");
   const [scaleExponent, setScaleExponent] = useState("0");
+  const [decimalPlaces, setDecimalPlaces] = useState(0);
   const [scaleConnected, setScaleConnected] = useState(false);
   const [scaleStatus, setScaleStatus] = useState("Not connected");
   const [scaleWeight, setScaleWeight] = useState<number | null>(null);
@@ -221,6 +226,9 @@ export default function Home() {
   const serialBufferRef = useRef("");
   const serialTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const exponentRef = useRef(0);
+  const decimalPlacesRef = useRef(0);
+  const exactPendingWeightRef = useRef<number | null>(null);
+  const weightEditedRef = useRef(false);
 
   useEffect(() => { selectedRef.current = selected; }, [selected]);
 
@@ -235,11 +243,6 @@ export default function Home() {
   const locationProgress = useMemo(() => calculateProgress(activePlots, weights, "location"), [activePlots, weights]);
   const recent = useMemo(() => weights.filter((record) => selectedTrialSet.has(record.entityName || "Unnamed trial")).sort((a, b) => Date.parse(b.weighedAt || b.updatedAt) - Date.parse(a.weighedAt || a.updatedAt)).slice(0, 10), [weights, selectedTrialSet]);
   const locations = useMemo(() => [...new Set(activePlots.map((plot) => plot.location).filter(Boolean))].sort(), [activePlots]);
-  useEffect(() => {
-    if (trialFilter && !selectedTrialSet.has(trialFilter)) setTrialFilter("");
-    if (locationFilter && !locations.includes(locationFilter)) setLocationFilter("");
-    setPage(1);
-  }, [selectedTrialSet, locations, trialFilter, locationFilter]);
   const filteredPlots = useMemo(() => {
     const needle = normalize(search);
     const rows = activePlots.filter((plot) => {
@@ -271,6 +274,7 @@ export default function Home() {
     const nextSession = await store.getSession(db, id);
     const nextWeights = nextSession ? await store.getWeights(db, nextSession.id) : [];
     const nextPlots = nextSession?.plots ?? [];
+    exactPendingWeightRef.current = null; weightEditedRef.current = false;
     setSession(nextSession); setPlots(nextPlots); setWeights(nextWeights); setSelected(null);
     setSelectedTrials([...new Set(nextPlots.map((plot) => plot.entityName || "Unnamed trial"))]); setSort({ key: "", direction: "asc" });
     setScanValue(""); setWeightValue(""); setPage(1); setSessions(await store.listSessions(db));
@@ -283,7 +287,9 @@ export default function Home() {
       try {
         const { store } = await loadRuntime();
         const exponent = Number(localStorage.getItem(SCALE_EXPONENT_KEY) || 0);
-        if (Number.isInteger(exponent) && exponent >= -6 && exponent <= 6) { exponentRef.current = exponent; setScaleExponent(String(exponent)); }
+        if (Number.isInteger(exponent) && exponent >= -10 && exponent <= 10) { exponentRef.current = exponent; setScaleExponent(String(exponent)); }
+        const savedDecimalPlaces = Number(localStorage.getItem(DECIMAL_PLACES_KEY) || 0);
+        if (Number.isInteger(savedDecimalPlaces) && savedDecimalPlaces >= 0 && savedDecimalPlaces <= 6) { decimalPlacesRef.current = savedDecimalPlaces; setDecimalPlaces(savedDecimalPlaces); }
         const initialized = await store.init();
         if (cancelled) return;
         setDatabase(initialized.database);
@@ -361,7 +367,9 @@ export default function Home() {
   function selectPlot(plot: Plot) {
     setSelected(plot); setScanError(""); setScanValue("");
     const record = weightsByUuid.get(normalize(plot.uuid));
-    setWeightValue(record ? String(record.weight) : "");
+    exactPendingWeightRef.current = record ? Number(record.weight) : null;
+    weightEditedRef.current = false;
+    setWeightValue(record ? formatInputNumber(Number(record.weight), decimalPlaces) : "");
     window.setTimeout(() => scanRef.current?.focus(), 0);
   }
   function handleScan(event: FormEvent) {
@@ -377,14 +385,15 @@ export default function Home() {
   }
   async function saveCurrentWeight() {
     if (!database || !session || !selected || !window.GdmWeighingStore || saving) return;
-    const value = parseWeight(weightValue);
+    const value = !weightEditedRef.current && exactPendingWeightRef.current !== null ? exactPendingWeightRef.current : parseWeight(weightValue);
     if (!Number.isFinite(value) || value < 0) { toast.error("Enter or wait for a valid non-negative scale weight."); weightRef.current?.focus(); return; }
     setSaving(true);
     try {
       const saved = await window.GdmWeighingStore.saveWeight(database, session.id, selected, value, scaleConnected ? "serial" : "manual");
       setWeights((current) => [saved, ...current.filter((item) => normalize(item.uuid) !== normalize(saved.uuid))]);
       setSession((current) => current ? { ...current, updatedAt: new Date().toISOString() } : current);
-      toast.success(`PW ${formatNumber(value)} saved for plot ${selected.obsName}.`);
+      toast.success(`PW ${formatNumber(value, decimalPlaces)} saved for plot ${selected.obsName}.`);
+      exactPendingWeightRef.current = null; weightEditedRef.current = false;
       setSelected(null); setScanValue(""); setWeightValue(""); window.setTimeout(() => scanRef.current?.focus(), 0);
     } catch (error) { toast.error(error instanceof Error ? error.message : "Could not save the weight."); }
     finally { setSaving(false); }
@@ -394,14 +403,14 @@ export default function Home() {
     if (!session || !window.GdmWeighingUtils) { toast.error("Load a weighing session before exporting."); return; }
     const exportPlots = filteredOnly ? filteredPlots : plots;
     if (!exportPlots.length) { toast.error("No plot records match the current filters."); return; }
-    try { const count = window.GdmWeighingUtils.exportSession(session, weights, format, exportPlots); toast.success(`${count} ${filteredOnly ? "filtered " : ""}plot records exported to ${format === "xlsx" ? "Excel" : "CSV"}.`); }
+    try { const count = window.GdmWeighingUtils.exportSession(session, weights, format, exportPlots, decimalPlaces); toast.success(`${count} ${filteredOnly ? "filtered " : ""}plot records exported to ${format === "xlsx" ? "Excel" : "CSV"} with ${decimalPlaces} decimal place${decimalPlaces === 1 ? "" : "s"}.`); }
     catch (error) { toast.error(error instanceof Error ? error.message : "Could not export the session."); }
   }
 
   const applyScaleWeight = useCallback((raw: number) => {
     const value = raw / (10 ** exponentRef.current);
     setRawScaleWeight(raw); setScaleWeight(value);
-    if (selectedRef.current) setWeightValue(String(value));
+    if (selectedRef.current) { exactPendingWeightRef.current = value; weightEditedRef.current = false; setWeightValue(formatInputNumber(value, decimalPlacesRef.current)); }
   }, []);
   const consumeSerial = useCallback((chunk: string) => {
     serialBufferRef.current += chunk;
@@ -457,6 +466,12 @@ export default function Home() {
     if (rawScaleWeight !== null) applyScaleWeight(rawScaleWeight);
     toast.success(value === "0" ? "Raw scale value selected." : `Scale factor applied: reading ${scaleFactorLabel(Number(value))}.`);
   }
+  function changeDecimalPlaces(value: string) {
+    const next = Number(value);
+    decimalPlacesRef.current = next; setDecimalPlaces(next); localStorage.setItem(DECIMAL_PLACES_KEY, String(next));
+    if (selected && !weightEditedRef.current && exactPendingWeightRef.current !== null) setWeightValue(formatInputNumber(exactPendingWeightRef.current, next));
+    toast.success(`Display and exports set to ${next} decimal place${next === 1 ? "" : "s"}.`);
+  }
   function changeSort(key: string) {
     setSort((current) => current.key === key ? { key, direction: current.direction === "asc" ? "desc" : "asc" } : { key, direction: "asc" });
     setPage(1);
@@ -491,8 +506,8 @@ export default function Home() {
           <details className="group relative">
             <summary className="flex h-10 min-w-36 cursor-pointer list-none items-center rounded-[5px] border border-[#bfd1e2] bg-white px-3 text-sm font-bold text-[#315b86]">{!trials.length ? "Trials: None" : selectedTrials.length === trials.length ? "Trials: All" : `Trials: ${selectedTrials.length} of ${trials.length}`}</summary>
             <div className="absolute right-0 z-20 mt-1 w-[min(360px,calc(100vw-36px))] rounded-lg border border-[#bfd1e2] bg-white p-2 shadow-xl">
-              <div className="flex gap-2 border-b border-[#dce6ef] pb-2"><Button type="button" variant="outline" className="h-8 text-xs" onClick={() => { setSelectedTrials(trials); setPage(1); }}>Select all</Button><Button type="button" variant="outline" className="h-8 text-xs" onClick={() => { setSelectedTrials([]); setSelected(null); setPage(1); }}>Clear</Button></div>
-              <div className="max-h-64 overflow-auto pt-1">{trials.length ? trials.map((trial) => <label key={trial} className="flex cursor-pointer items-start gap-2 px-1 py-2 text-sm font-semibold"><input type="checkbox" checked={selectedTrialSet.has(trial)} onChange={(event) => { setSelectedTrials((current) => event.target.checked ? [...current, trial] : current.filter((item) => item !== trial)); if (!event.target.checked && (selected?.entityName || "Unnamed trial") === trial) setSelected(null); setPage(1); }} className="mt-0.5 accent-[#1f4269]" /><span>{trial}</span></label>) : <p className="p-3 text-sm text-[#657b90]">No trials loaded.</p>}</div>
+              <div className="flex gap-2 border-b border-[#dce6ef] pb-2"><Button type="button" variant="outline" className="h-8 text-xs" onClick={() => { setSelectedTrials(trials); setTrialFilter(""); setLocationFilter(""); setPage(1); }}>Select all</Button><Button type="button" variant="outline" className="h-8 text-xs" onClick={() => { setSelectedTrials([]); setSelected(null); setTrialFilter(""); setLocationFilter(""); setPage(1); }}>Clear</Button></div>
+              <div className="max-h-64 overflow-auto pt-1">{trials.length ? trials.map((trial) => <label key={trial} className="flex cursor-pointer items-start gap-2 px-1 py-2 text-sm font-semibold"><input type="checkbox" checked={selectedTrialSet.has(trial)} onChange={(event) => { setSelectedTrials((current) => event.target.checked ? [...current, trial] : current.filter((item) => item !== trial)); if (!event.target.checked && (selected?.entityName || "Unnamed trial") === trial) setSelected(null); setTrialFilter(""); setLocationFilter(""); setPage(1); }} className="mt-0.5 accent-[#1f4269]" /><span>{trial}</span></label>) : <p className="p-3 text-sm text-[#657b90]">No trials loaded.</p>}</div>
             </div>
           </details>
           <Button type="button" variant="outline" disabled={!session} onClick={() => void renameActiveSession()} className="h-10 rounded-[5px]"><Pencil className="size-4" /> Rename</Button>
@@ -517,12 +532,13 @@ export default function Home() {
 
             <section className="mt-3 grid gap-3 rounded-[5px] border border-[#cbdcec] border-l-4 border-l-[#78a9d8] bg-[#eaf2f9] p-3.5 xl:grid-cols-[minmax(150px,.7fr)_minmax(330px,1.6fr)_minmax(110px,.5fr)] xl:items-center">
               <div className="flex items-center gap-3"><div className="grid size-11 place-items-center rounded-[5px] bg-[#d6e6f3] text-[#25537f]"><Cable className="size-5" /></div><div><p className="font-extrabold text-[#173a61]">Serial scale</p><p className="text-xs text-[#60768d]">{scaleStatus}</p></div></div>
-              <div className="grid items-end gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(95px,.72fr)_minmax(105px,.72fr)_minmax(125px,1fr)]">
+              <div className="grid items-end gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(85px,.58fr)_minmax(105px,.72fr)_minmax(105px,.72fr)_minmax(125px,1fr)]">
                 <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">Baud rate<NativeSelect value={baudRate} onChange={(event) => setBaudRate(event.target.value)} disabled={scaleConnected} className="mt-1 h-10 w-full bg-white px-2 text-sm font-bold normal-case tracking-normal">{[1200,2400,4800,9600,19200,38400,57600,115200].map((rate) => <NativeSelectOption key={rate} value={String(rate)}>{rate} baud</NativeSelectOption>)}</NativeSelect></label>
-                <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">Scale factor<NativeSelect value={scaleExponent} onChange={(event) => changeExponent(event.target.value)} className="mt-1 h-10 w-full bg-white px-2 text-sm font-bold normal-case tracking-normal">{[-6,-5,-4,-3,-2,-1,0,1,2,3,4,5,6].map((value) => <NativeSelectOption key={value} value={String(value)}>{value < 0 ? `× 10${["⁰","¹","²","³","⁴","⁵","⁶"][Math.abs(value)]}` : value > 0 ? `÷ 10${["⁰","¹","²","³","⁴","⁵","⁶"][value]}` : "Raw value"}</NativeSelectOption>)}</NativeSelect></label>
+                <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">Scale factor<NativeSelect value={scaleExponent} onChange={(event) => changeExponent(event.target.value)} className="mt-1 h-10 w-full bg-white px-2 text-sm font-bold normal-case tracking-normal">{[-10,-9,-8,-7,-6,-5,-4,-3,-2,-1,0,1,2,3,4,5,6,7,8,9,10].map((value) => <NativeSelectOption key={value} value={String(value)}>{value < 0 ? `× 10${superscript(Math.abs(value))}` : value > 0 ? `÷ 10${superscript(value)}` : "Raw value"}</NativeSelectOption>)}</NativeSelect></label>
+                <label className="text-[11px] font-extrabold uppercase tracking-[.08em] text-[#587064]">Decimal places<NativeSelect value={String(decimalPlaces)} onChange={(event) => changeDecimalPlaces(event.target.value)} className="mt-1 h-10 w-full bg-white px-2 text-sm font-bold normal-case tracking-normal">{[0,1,2,3,4,5,6].map((value) => <NativeSelectOption key={value} value={String(value)}>{value}</NativeSelectOption>)}</NativeSelect></label>
                 <Button type="button" onClick={() => void toggleScale()} className={`h-10 rounded-[5px] font-extrabold sm:col-span-2 xl:col-span-1 ${scaleConnected ? "bg-[#d63b38]" : "bg-[#1f4269]"}`}>{scaleConnected ? "Disconnect" : "Connect scale"}</Button>
               </div>
-              <div className="border-t border-[#d5dfd0] pt-2 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0"><p className="text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">Current reading</p><p className={`text-3xl font-black ${scaleWeight === null ? "text-[#173a61]" : "text-[#237a63]"}`}>{scaleWeight === null ? "—" : formatNumber(scaleWeight)}</p><p className="mt-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">{scaleConnected ? `${selected ? "PW filled automatically" : "Scan a plot to apply"}${scaleExponent === "0" ? "" : ` · ${scaleFactorLabel(Number(scaleExponent))}`}` : "Waiting for connection"}</p></div>
+              <div className="border-t border-[#d5dfd0] pt-2 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0"><p className="text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">Current reading</p><p className={`text-3xl font-black ${scaleWeight === null ? "text-[#173a61]" : "text-[#237a63]"}`} title={rawScaleWeight === null ? undefined : `Raw reading: ${formatRawNumber(rawScaleWeight)}`}>{scaleWeight === null ? "—" : formatNumber(scaleWeight, decimalPlaces)}</p><p className="mt-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#75867c]">{scaleConnected ? `${selected ? "PW filled automatically" : "Scan a plot to apply"}${scaleExponent === "0" ? "" : ` · ${scaleFactorLabel(Number(scaleExponent))}`}` : "Waiting for connection"}</p></div>
             </section>
             <p className="mt-2 text-xs text-[#647a90]">Connect the scale, select FEID or UUID, then scan a plot to fill PW automatically.</p>
 
@@ -535,14 +551,14 @@ export default function Home() {
           </article>
 
           {selected && <article className="overflow-hidden rounded-lg border border-[#cbdcec] bg-white shadow-[0_10px_28px_rgba(26,59,93,0.08)]">
-            <div className="bg-[#1f4269] p-5 text-white sm:p-6"><div className="mb-5 flex justify-between gap-3"><span className="rounded-full bg-[#d9e9f6] px-3 py-1.5 text-sm font-black uppercase text-[#173f66]">✓ Plot found</span>{existingWeight && <span className="rounded-full bg-[#f5cf77] px-3 py-1.5 text-sm font-bold text-[#6a4700]">Already weighed: PW {formatNumber(existingWeight.weight)}</span>}</div><div className="grid gap-5 md:grid-cols-[1.45fr_.55fr]"><div><p className="text-xs font-bold uppercase tracking-[.14em] text-[#bbcee1]">Entity name</p><h2 className="text-3xl font-extrabold">{selected.entityName}</h2><p className="mt-5 text-xs font-bold uppercase tracking-[.14em] text-[#bbcee1]">(OBS) Name</p><p className="text-5xl font-black">{selected.obsName}</p></div><div className="rounded-md border border-white/20 bg-white/10 p-4"><p className="text-xs font-bold uppercase tracking-[.12em] text-[#bbcee1]">(GER) Name</p><p className="mt-2 text-xl font-extrabold">{selected.gerName || "—"}</p><p className="mt-4 flex items-center gap-2 text-sm text-[#c7d7e7]"><MapPin className="size-4" /> {selected.location || "Unspecified"} · {selected.site || "Unspecified"}</p></div></div></div>
+            <div className="bg-[#1f4269] p-5 text-white sm:p-6"><div className="mb-5 flex justify-between gap-3"><span className="rounded-full bg-[#d9e9f6] px-3 py-1.5 text-sm font-black uppercase text-[#173f66]">✓ Plot found</span>{existingWeight && <span className="rounded-full bg-[#f5cf77] px-3 py-1.5 text-sm font-bold text-[#6a4700]">Already weighed: PW {formatNumber(existingWeight.weight, decimalPlaces)}</span>}</div><div className="grid gap-5 md:grid-cols-[1.45fr_.55fr]"><div><p className="text-xs font-bold uppercase tracking-[.14em] text-[#bbcee1]">Entity name</p><h2 className="text-3xl font-extrabold">{selected.entityName}</h2><p className="mt-5 text-xs font-bold uppercase tracking-[.14em] text-[#bbcee1]">(OBS) Name</p><p className="text-5xl font-black">{selected.obsName}</p></div><div className="rounded-md border border-white/20 bg-white/10 p-4"><p className="text-xs font-bold uppercase tracking-[.12em] text-[#bbcee1]">(GER) Name</p><p className="mt-2 text-xl font-extrabold">{selected.gerName || "—"}</p><p className="mt-4 flex items-center gap-2 text-sm text-[#c7d7e7]"><MapPin className="size-4" /> {selected.location || "Unspecified"} · {selected.site || "Unspecified"}</p></div></div></div>
             <div className="grid gap-6 p-5 sm:p-7 xl:grid-cols-[1fr_330px]">
               <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">{[["Block",selected.block],["Entry code",selected.entryCode],["Row",selected.row],["Column",selected.column]].map(([label,value]) => <div key={label} className="rounded-md border border-[#cfdeeb] bg-[#f7fafe] p-4"><dt className="text-xs font-bold uppercase text-[#6d8195]">{label}</dt><dd className="mt-1 text-2xl font-black">{value || "—"}</dd></div>)}<div className="col-span-2 rounded-md border border-[#cfdeeb] bg-[#f7fafe] p-4 sm:col-span-4"><dt className="text-xs font-bold uppercase text-[#6d8195]">Identifiers</dt><dd className="mt-2 grid gap-2 text-sm sm:grid-cols-2"><span><strong>FEID:</strong> {selected.feid}</span><span className="break-all"><strong>UUID:</strong> {selected.uuid}</span></dd></div></dl>
-              <form onSubmit={(event) => { event.preventDefault(); void saveCurrentWeight(); }} className="rounded-md border border-[#cbdcec] bg-[#eaf2f9] p-5"><label htmlFor="plot-weight" className="flex items-center gap-2 text-sm font-bold uppercase tracking-[.1em]"><Scale className="size-4" /> Plot weight (PW)</label><Input id="plot-weight" ref={weightRef} inputMode="decimal" value={weightValue} onChange={(event) => setWeightValue(event.target.value)} className="mt-3 h-16 border-2 bg-white px-4 text-3xl font-black" placeholder="0.000" /><Button type="submit" disabled={saving} className="mt-3 h-12 w-full rounded-[5px] bg-[#1f4269] text-base font-black">{saving ? <LoaderCircle className="animate-spin" /> : <Check />} {existingWeight ? "Update PW" : "Save PW"}</Button></form>
+              <form onSubmit={(event) => { event.preventDefault(); void saveCurrentWeight(); }} className="rounded-md border border-[#cbdcec] bg-[#eaf2f9] p-5"><label htmlFor="plot-weight" className="flex items-center gap-2 text-sm font-bold uppercase tracking-[.1em]"><Scale className="size-4" /> Plot weight (PW)</label><Input id="plot-weight" ref={weightRef} inputMode="decimal" value={weightValue} onChange={(event) => { weightEditedRef.current = true; exactPendingWeightRef.current = null; setWeightValue(event.target.value); }} className="mt-3 h-16 border-2 bg-white px-4 text-3xl font-black" placeholder={formatInputNumber(0, decimalPlaces)} /><Button type="submit" disabled={saving} className="mt-3 h-12 w-full rounded-[5px] bg-[#1f4269] text-base font-black">{saving ? <LoaderCircle className="animate-spin" /> : <Check />} {existingWeight ? "Update PW" : "Save PW"}</Button></form>
             </div>
           </article>}
 
-          <section className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,0.08)] sm:p-6"><div className="flex items-center justify-between border-b-2 border-[#d6e3ef] pb-3"><div><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]">◷ Recent history</p><h2 className="text-2xl font-extrabold">Latest weighings</h2></div><span className="rounded bg-[#eaf3fb] px-2.5 py-1 text-xs font-bold">10 most recent</span></div>{recent.length ? <div className="divide-y divide-[#dbe6f0]">{recent.map((record) => <article key={record.key} className="grid items-center gap-3 py-3.5 sm:grid-cols-[1fr_auto_auto]"><div><p className="text-lg font-extrabold">Plot {record.obsName || "—"}</p><p className="text-xs text-[#657b90]">{record.entityName || "Unnamed trial"} · FEID {record.feid || "—"}</p></div><div className="sm:text-right"><small className="font-bold">PW</small><p className="text-xl font-black">{formatNumber(record.weight)}</p></div><time className="text-xs text-[#657b90]">{formatDateTime(record.weighedAt || record.updatedAt)}</time></article>)}</div> : <div className="grid min-h-48 place-content-center justify-items-center text-center"><Scale className="size-12 rounded-lg bg-[#dceaf6] p-3" /><strong className="mt-3">No weighings recorded</strong><p className="text-sm text-[#647a90]">Saved weighings will appear here automatically.</p></div>}</section>
+          <section className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,0.08)] sm:p-6"><div className="flex items-center justify-between border-b-2 border-[#d6e3ef] pb-3"><div><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]">◷ Recent history</p><h2 className="text-2xl font-extrabold">Latest weighings</h2></div><span className="rounded bg-[#eaf3fb] px-2.5 py-1 text-xs font-bold">10 most recent</span></div>{recent.length ? <div className="divide-y divide-[#dbe6f0]">{recent.map((record) => <article key={record.key} className="grid items-center gap-3 py-3.5 sm:grid-cols-[1fr_auto_auto]"><div><p className="text-lg font-extrabold">Plot {record.obsName || "—"}</p><p className="text-xs text-[#657b90]">{record.entityName || "Unnamed trial"} · FEID {record.feid || "—"}</p></div><div className="sm:text-right"><small className="font-bold">PW</small><p className="text-xl font-black">{formatNumber(record.weight, decimalPlaces)}</p></div><time className="text-xs text-[#657b90]">{formatDateTime(record.weighedAt || record.updatedAt)}</time></article>)}</div> : <div className="grid min-h-48 place-content-center justify-items-center text-center"><Scale className="size-12 rounded-lg bg-[#dceaf6] p-3" /><strong className="mt-3">No weighings recorded</strong><p className="text-sm text-[#647a90]">Saved weighings will appear here automatically.</p></div>}</section>
         </section>
       ) : (
         <section className="mx-auto max-w-[1500px] space-y-5 px-[18px] pt-5">
@@ -552,7 +568,7 @@ export default function Home() {
           <section className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,.08)] sm:p-6"><div className="flex flex-wrap items-end justify-between gap-3 border-b-2 border-[#d6e3ef] pb-3"><div><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]"><Gauge className="mr-1 inline size-4" /> Plot records</p><h2 className="text-2xl font-extrabold">Weighing data</h2></div><div className="flex flex-wrap items-center justify-end gap-2"><strong className="mr-1 text-sm text-[#60768d]">{filteredPlots.length} record{filteredPlots.length === 1 ? "" : "s"}</strong><Button type="button" disabled={!filteredPlots.length} onClick={() => exportSession("xlsx", true)} className="h-9 bg-[#c88918] text-white hover:bg-[#b77710]"><Download className="size-4" /> Export filtered Excel</Button><Button type="button" disabled={!filteredPlots.length} onClick={() => exportSession("csv", true)} className="h-9 bg-[#c88918] text-white hover:bg-[#b77710]"><Download className="size-4" /> Export filtered CSV</Button></div></div>
             <div className="my-4 grid gap-2 md:grid-cols-2 xl:grid-cols-[1.5fr_.7fr_.7fr_.7fr]"><div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#6e94b9]" /><Input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} className="h-11 pl-9" placeholder="Search FEID, UUID, OBS or names…" /></div><NativeSelect value={trialFilter} onChange={(event) => { setTrialFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All trials</NativeSelectOption>{trials.filter((value) => selectedTrialSet.has(value)).map((value) => <NativeSelectOption key={value} value={value}>{value}</NativeSelectOption>)}</NativeSelect><NativeSelect value={locationFilter} onChange={(event) => { setLocationFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All locations</NativeSelectOption>{locations.map((value) => <NativeSelectOption key={value} value={value}>{value}</NativeSelectOption>)}</NativeSelect><NativeSelect value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All statuses</NativeSelectOption><NativeSelectOption value="weighed">Weighed</NativeSelectOption><NativeSelectOption value="pending">Pending</NativeSelectOption></NativeSelect></div>
             <div className="mb-3 flex flex-col justify-between gap-3 text-sm text-[#60768d] sm:flex-row sm:items-center"><span>{paginationSummary}</span><div className="flex items-center gap-2"><Button variant="outline" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(value - 1, 1))}>← Previous</Button><span>Page {safePage} of {pageCount}</span><Button variant="outline" disabled={safePage >= pageCount} onClick={() => setPage((value) => Math.min(value + 1, pageCount))}>Next →</Button></div></div>
-            <div className="overflow-auto rounded-lg border border-[#d4e0eb]"><table className="w-full whitespace-nowrap text-left text-xs"><thead className="bg-[#1f4269] text-white"><tr>{tableColumns.map(([label,key]) => <th key={key} className="p-0 text-[11px] uppercase tracking-wide"><button type="button" onClick={() => changeSort(key)} className="w-full p-3 text-left font-bold">{label} <span className={sort.key === key ? "text-white" : "text-[#9fc0df]"}>{sort.key === key ? (sort.direction === "asc" ? "↑" : "↓") : "↕"}</span></button></th>)}</tr></thead><tbody>{pageRows.length ? pageRows.map((plot,index) => { const record = weightsByUuid.get(normalize(plot.uuid)); return <tr key={plot.uuid} className={index % 2 ? "bg-[#f7fafd]" : "bg-white"}><td className="p-2.5"><span className={`rounded-full px-2 py-1 font-bold ${record ? "bg-[#daf0e9] text-[#1d6e59]" : "bg-[#eef1f4] text-[#6b7b88]"}`}>{record ? "Weighed" : "Pending"}</span></td>{[plot.entityName,plot.obsName,plot.feid,plot.uuid,plot.block,plot.entryCode,plot.row,plot.column,plot.gerName || "—"].map((value,i) => <td key={i} className="max-w-64 overflow-hidden text-ellipsis border-b border-[#e0e8ef] p-2.5" title={value}>{value}</td>)}<td className="border-b p-2.5">{record ? formatNumber(record.weight) : "—"}</td><td className="border-b p-2.5">{record ? formatDateTime(record.weighedAt || record.updatedAt) : "—"}</td></tr>; }) : <tr><td colSpan={12} className="p-8 text-center text-[#657b90]">No plots match the current filters.</td></tr>}</tbody></table></div>
+            <div className="overflow-auto rounded-lg border border-[#d4e0eb]"><table className="w-full whitespace-nowrap text-left text-xs"><thead className="bg-[#1f4269] text-white"><tr>{tableColumns.map(([label,key]) => <th key={key} className="p-0 text-[11px] uppercase tracking-wide"><button type="button" onClick={() => changeSort(key)} className="w-full p-3 text-left font-bold">{label} <span className={sort.key === key ? "text-white" : "text-[#9fc0df]"}>{sort.key === key ? (sort.direction === "asc" ? "↑" : "↓") : "↕"}</span></button></th>)}</tr></thead><tbody>{pageRows.length ? pageRows.map((plot,index) => { const record = weightsByUuid.get(normalize(plot.uuid)); return <tr key={plot.uuid} className={index % 2 ? "bg-[#f7fafd]" : "bg-white"}><td className="p-2.5"><span className={`rounded-full px-2 py-1 font-bold ${record ? "bg-[#daf0e9] text-[#1d6e59]" : "bg-[#eef1f4] text-[#6b7b88]"}`}>{record ? "Weighed" : "Pending"}</span></td>{[plot.entityName,plot.obsName,plot.feid,plot.uuid,plot.block,plot.entryCode,plot.row,plot.column,plot.gerName || "—"].map((value,i) => <td key={i} className="max-w-64 overflow-hidden text-ellipsis border-b border-[#e0e8ef] p-2.5" title={value}>{value}</td>)}<td className="border-b p-2.5">{record ? formatNumber(record.weight, decimalPlaces) : "—"}</td><td className="border-b p-2.5">{record ? formatDateTime(record.weighedAt || record.updatedAt) : "—"}</td></tr>; }) : <tr><td colSpan={12} className="p-8 text-center text-[#657b90]">No plots match the current filters.</td></tr>}</tbody></table></div>
             <div className="mt-4 flex flex-col justify-between gap-3 text-sm text-[#60768d] sm:flex-row sm:items-center"><span>{paginationSummary}</span><div className="flex items-center gap-2"><Button variant="outline" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(value - 1, 1))}>← Previous</Button><span>Page {safePage} of {pageCount}</span><Button variant="outline" disabled={safePage >= pageCount} onClick={() => setPage((value) => Math.min(value + 1, pageCount))}>Next →</Button></div></div>
           </section>
         </section>

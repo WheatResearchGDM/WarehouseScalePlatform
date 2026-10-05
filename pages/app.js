@@ -2,11 +2,13 @@
   "use strict";
 
   const SCALE_EXPONENT_KEY = "gdm-warehouse-scale-exponent-v1";
+  const DECIMAL_PLACES_KEY = "gdm-warehouse-decimal-places-v1";
   const PAGE_SIZE = 100;
   const state = {
     database: null, sessions: [], session: null, plots: [], weights: [], selected: null,
     serialPort: null, serialReader: null, readLoop: null, keepReading: false, serialBuffer: "",
-    serialFlushTimer: null, rawScaleWeight: null, scaleExponent: loadScaleExponent(), page: 1,
+    serialFlushTimer: null, rawScaleWeight: null, scaleExponent: loadScaleExponent(), decimalPlaces: loadDecimalPlaces(), page: 1,
+    exactPendingWeight: null, weightEdited: false,
     selectedTrials: new Set(), sortKey: "", sortDirection: "asc", filteredPlots: [],
   };
   const byFeid = new Map();
@@ -21,7 +23,7 @@
     scanForm: $("scan-form"), scanMode: $("scan-mode"), scanValue: $("scan-value"), scanError: $("scan-error"),
     plotCard: $("plot-card"), weightForm: $("weight-form"), weight: $("plot-weight"), saveButton: $("save-button"), existingBadge: $("existing-badge"),
     recentList: $("recent-list"), recentEmpty: $("recent-empty"), toast: $("toast"),
-    connectScale: $("connect-scale"), baudRate: $("baud-rate"), scaleFactor: $("scale-factor"), scaleStatus: $("scale-status"), scaleWeight: $("scale-weight"), scaleReadingNote: $("scale-reading-note"), serialHelp: $("serial-help"),
+    connectScale: $("connect-scale"), baudRate: $("baud-rate"), scaleFactor: $("scale-factor"), decimalPlaces: $("decimal-places"), scaleStatus: $("scale-status"), scaleWeight: $("scale-weight"), scaleReadingNote: $("scale-reading-note"), serialHelp: $("serial-help"),
     tableSearch: $("table-search"), trialFilter: $("trial-filter"), locationFilter: $("location-filter"), statusFilter: $("status-filter"), tableBody: $("plot-table-body"),
     pagePrev: $("page-prev"), pageNext: $("page-next"), pageNumber: $("page-number"), pageSummary: $("page-summary"), tableCount: $("table-count"),
     pagePrevTop: $("page-prev-top"), pageNextTop: $("page-next-top"), pageNumberTop: $("page-number-top"), pageSummaryTop: $("page-summary-top"),
@@ -30,11 +32,17 @@
 
   function loadScaleExponent() {
     const value = Number(localStorage.getItem(SCALE_EXPONENT_KEY) || 0);
-    return Number.isInteger(value) && value >= -6 && value <= 6 ? value : 0;
+    return Number.isInteger(value) && value >= -10 && value <= 10 ? value : 0;
+  }
+  function loadDecimalPlaces() {
+    const value = Number(localStorage.getItem(DECIMAL_PLACES_KEY) || 0);
+    return Number.isInteger(value) && value >= 0 && value <= 6 ? value : 0;
   }
   function normalize(value) { return window.GdmWeighingUtils.normalize(value); }
   function parseWeight(value) { const text = String(value || "").trim(); return text ? Number(text.replace(",", ".")) : NaN; }
-  function formatNumber(value) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 }).format(value); }
+  function formatNumber(value, places = state.decimalPlaces) { return new Intl.NumberFormat("en-US", { minimumFractionDigits: places, maximumFractionDigits: places }).format(value); }
+  function formatInputNumber(value, places = state.decimalPlaces) { return new Intl.NumberFormat("en-US", { useGrouping: false, minimumFractionDigits: places, maximumFractionDigits: places }).format(value); }
+  function formatRawNumber(value) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 12 }).format(value); }
   function formatDateTime(value) {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? "Unavailable" : new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(date);
@@ -56,7 +64,8 @@
   function weightsMap() { return window.GdmWeighingUtils.byUuid(state.weights); }
   function trialNames() { return [...new Set(state.plots.map((plot) => plot.entityName || "Unnamed trial"))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })); }
   function activePlots() { return state.plots.filter((plot) => state.selectedTrials.has(plot.entityName || "Unnamed trial")); }
-  function scaleFactorLabel(exponent = state.scaleExponent) { return exponent < 0 ? `× 10^${Math.abs(exponent)}` : exponent > 0 ? `÷ 10^${exponent}` : "raw value"; }
+  function superscript(value) { return String(value).replace(/\d/g, (digit) => "⁰¹²³⁴⁵⁶⁷⁸⁹"[Number(digit)]); }
+  function scaleFactorLabel(exponent = state.scaleExponent) { return exponent < 0 ? `× 10${superscript(Math.abs(exponent))}` : exponent > 0 ? `÷ 10${superscript(exponent)}` : "raw value"; }
   function playScanTone(kind) {
     try {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -88,6 +97,8 @@
     state.plots = state.session?.plots || [];
     state.weights = state.session ? await window.GdmWeighingStore.getWeights(state.database, state.session.id) : [];
     state.selected = null;
+    state.exactPendingWeight = null;
+    state.weightEdited = false;
     state.page = 1;
     state.sortKey = "";
     state.selectedTrials = new Set(trialNames());
@@ -96,6 +107,7 @@
     refs.plotCard.hidden = true;
     refs.scanValue.value = "";
     refs.weight.value = "";
+    refs.weight.placeholder = formatInputNumber(0);
     await refreshSessionList();
     renderAll();
     refs.scanValue.focus();
@@ -220,19 +232,35 @@
     text("location", `⌖ ${plot.location || "Unspecified"} · ${plot.site || "Unspecified"}`);
     text("block", plot.block || "—"); text("entry-code", plot.entryCode || "—"); text("row", plot.row || "—"); text("column", plot.column || "—"); text("feid", plot.feid); text("uuid", plot.uuid);
     const existing = weightsMap().get(normalize(plot.uuid));
-    refs.weight.value = existing ? String(existing.weight) : "";
+    state.exactPendingWeight = existing ? Number(existing.weight) : null;
+    state.weightEdited = false;
+    refs.weight.value = existing ? formatInputNumber(Number(existing.weight)) : "";
     refs.existingBadge.hidden = !existing;
     refs.existingBadge.textContent = existing ? `Already weighed: PW ${formatNumber(existing.weight)}` : "";
     refs.saveButton.textContent = existing ? "✓ Update PW" : "✓ Save PW";
     setTimeout(() => refs.scanValue.focus(), 0);
   }
   function clearSelection() {
-    state.selected = null; refs.plotCard.hidden = true; refs.scanValue.value = ""; refs.weight.value = "";
+    state.selected = null; state.exactPendingWeight = null; state.weightEdited = false; refs.plotCard.hidden = true; refs.scanValue.value = ""; refs.weight.value = "";
     setTimeout(() => refs.scanValue.focus(), 0);
+  }
+  function refreshPrecisionDisplay() {
+    refs.weight.placeholder = formatInputNumber(0);
+    if (state.rawScaleWeight !== null) {
+      const scaled = state.rawScaleWeight / (10 ** state.scaleExponent);
+      refs.scaleWeight.textContent = formatNumber(scaled);
+    }
+    if (state.selected) {
+      const existing = weightsMap().get(normalize(state.selected.uuid));
+      refs.existingBadge.textContent = existing ? `Already weighed: PW ${formatNumber(Number(existing.weight))}` : "";
+      if (!state.weightEdited && state.exactPendingWeight !== null) refs.weight.value = formatInputNumber(state.exactPendingWeight);
+    }
+    renderRecent();
+    renderDashboard();
   }
   async function saveCurrentWeight() {
     if (!state.selected || !state.session) return;
-    const weight = parseWeight(refs.weight.value);
+    const weight = !state.weightEdited && state.exactPendingWeight !== null ? state.exactPendingWeight : parseWeight(refs.weight.value);
     if (!Number.isFinite(weight) || weight < 0) { showToast("Enter or wait for a valid non-negative scale weight.", true); refs.weight.focus(); refs.weight.select(); return; }
     refs.saveButton.disabled = true;
     try {
@@ -278,7 +306,7 @@
     if (!state.session) { showToast("Load a weighing session before exporting.", true); return; }
     const exportPlots = filteredOnly ? state.filteredPlots : state.plots;
     if (!exportPlots.length) { showToast("No plot records match the current filters.", true); return; }
-    try { const count = window.GdmWeighingUtils.exportSession(state.session, state.weights, format, exportPlots); showToast(`${count} ${filteredOnly ? "filtered " : ""}plot records exported to ${format === "xlsx" ? "Excel" : "CSV"}.`); }
+    try { const count = window.GdmWeighingUtils.exportSession(state.session, state.weights, format, exportPlots, state.decimalPlaces); showToast(`${count} ${filteredOnly ? "filtered " : ""}plot records exported to ${format === "xlsx" ? "Excel" : "CSV"} with ${state.decimalPlaces} decimal place${state.decimalPlaces === 1 ? "" : "s"}.`); }
     catch (error) { showToast(error instanceof Error ? error.message : "Could not export the session.", true); }
   }
 
@@ -294,8 +322,8 @@
     refs.scaleWeight.textContent = formatNumber(value); refs.scaleWeight.classList.add("is-live");
     const factor = state.scaleExponent ? ` · ${scaleFactorLabel()}` : "";
     refs.scaleReadingNote.textContent = state.selected ? `PW filled automatically${factor}` : `Scan a plot to apply${factor}`;
-    refs.scaleWeight.title = `Raw reading: ${formatNumber(rawValue)}${rawLine ? ` (${String(rawLine).trim()})` : ""}`;
-    if (state.selected) refs.weight.value = String(value);
+    refs.scaleWeight.title = `Raw reading: ${formatRawNumber(rawValue)}${rawLine ? ` (${String(rawLine).trim()})` : ""}`;
+    if (state.selected) { state.exactPendingWeight = value; state.weightEdited = false; refs.weight.value = formatInputNumber(value); }
   }
   function consumeSerialText(chunk) {
     state.serialBuffer += chunk;
@@ -352,8 +380,16 @@
   });
   refs.scanMode.addEventListener("change", () => { refs.scanValue.placeholder = refs.scanMode.value === "feid" ? "Scan or enter the FEID" : "Scan or enter the UUID"; refs.scanValue.value = ""; refs.scanError.hidden = true; refs.scanValue.focus(); });
   refs.weightForm.addEventListener("submit", (event) => { event.preventDefault(); void saveCurrentWeight(); });
+  refs.weight.addEventListener("input", () => { state.weightEdited = true; state.exactPendingWeight = null; });
   refs.scaleFactor.value = String(state.scaleExponent);
   refs.scaleFactor.addEventListener("change", () => { state.scaleExponent = Number(refs.scaleFactor.value); localStorage.setItem(SCALE_EXPONENT_KEY, String(state.scaleExponent)); if (state.rawScaleWeight !== null) applyScaleWeight(state.rawScaleWeight, ""); showToast(state.scaleExponent ? `Scale factor applied: reading ${scaleFactorLabel()}.` : "Raw scale value selected."); });
+  refs.decimalPlaces.value = String(state.decimalPlaces);
+  refs.decimalPlaces.addEventListener("change", () => {
+    state.decimalPlaces = Number(refs.decimalPlaces.value);
+    localStorage.setItem(DECIMAL_PLACES_KEY, String(state.decimalPlaces));
+    refreshPrecisionDisplay();
+    showToast(`Display and exports set to ${state.decimalPlaces} decimal place${state.decimalPlaces === 1 ? "" : "s"}.`);
+  });
   refs.connectScale.addEventListener("click", () => void toggleScaleConnection());
   refs.importData.addEventListener("click", () => refs.dataFile.click());
   refs.dataFile.addEventListener("change", () => { const [file] = refs.dataFile.files || []; if (file) void importFile(file); });

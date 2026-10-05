@@ -51,13 +51,13 @@ h2 { margin: 0; color: #173a61; font-size: 23px; letter-spacing: -.02em; }
 .outline-button { border: 1px solid #b97910; background: #c88918; color: #fff; }
 .import-button { border: 1px solid #547fa6; background: #eaf3fb; color: #285882; }
 .dataset-note { margin: 12px 0 0; color: #60768d; font-size: 12px; font-weight: 700; }
-.scale-panel { margin-top: 12px; padding: 14px; display: grid; grid-template-columns: minmax(175px,.7fr) minmax(390px,1.6fr) minmax(130px,.5fr); align-items: center; gap: 14px; border: 1px solid #cbdcec; border-left: 4px solid #78a9d8; border-radius: 5px; background: #eaf2f9; }
+.scale-panel { margin-top: 12px; padding: 14px; display: grid; grid-template-columns: minmax(175px,.7fr) minmax(520px,1.8fr) minmax(130px,.5fr); align-items: center; gap: 14px; border: 1px solid #cbdcec; border-left: 4px solid #78a9d8; border-radius: 5px; background: #eaf2f9; }
 .scale-panel__intro { display: flex; align-items: center; gap: 11px; }
 .scale-panel__intro strong, .scale-panel__intro span { display: block; }
 .scale-panel__intro strong { color: #173a61; font-size: 15px; }
 .scale-panel__intro span { margin-top: 2px; color: #60768d; font-size: 12px; }
 .scale-icon { width: 42px; height: 42px; flex: 0 0 42px; display: grid; place-items: center; border-radius: 5px; background: #d6e6f3; color: #25537f; font-size: 21px; }
-.scale-panel__controls { display: grid; grid-template-columns: minmax(105px,.72fr) minmax(115px,.72fr) minmax(145px,1fr); align-items: end; gap: 9px; }
+.scale-panel__controls { display: grid; grid-template-columns: minmax(95px,.65fr) minmax(115px,.75fr) minmax(115px,.75fr) minmax(145px,1fr); align-items: end; gap: 9px; }
 .scale-panel__controls label { color: #587064; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
 .scale-panel__controls select { width: 100%; height: 40px; margin-top: 4px; padding: 0 10px; border: 1px solid #cbdcec; border-radius: 5px; background: #fff; color: #17365a; }
 .scale-button { height: 40px; padding: 0 14px; border: 0; border-radius: 5px; background: #1f4269; color: #fff; font-size: 13px; font-weight: 850; }

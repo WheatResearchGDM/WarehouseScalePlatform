@@ -9,6 +9,16 @@
   ];
 
   function normalize(value) { return String(value || "").trim().toUpperCase(); }
+  function decimalPlaces(value) {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed >= 0 && parsed <= 6 ? parsed : 0;
+  }
+  function fixedDecimal(value, places) {
+    const digits = decimalPlaces(places);
+    const factor = 10 ** digits;
+    const rounded = Math.round((Number(value) + Number.EPSILON) * factor) / factor;
+    return rounded.toFixed(digits);
+  }
   function byUuid(weights) { return new Map((weights || []).map((item) => [normalize(item.uuid), item])); }
   function groupProgress(plots, weights, key) {
     const weightMap = byUuid(weights);
@@ -109,13 +119,20 @@
     link.remove();
     setTimeout(() => URL.revokeObjectURL(href), 0);
   }
-  function exportSession(session, weights, format, plots = session.plots) {
+  function exportSession(session, weights, format, plots = session.plots, places = 0) {
     if (!global.XLSX) throw new Error("The spreadsheet writer is unavailable.");
     const rows = exportRows(session, weights, plots);
+    const digits = decimalPlaces(places);
     const stamp = fileStamp();
     const name = `${slug(session.name)}_${stamp}`;
     const sheet = global.XLSX.utils.json_to_sheet(rows);
     if (format === "xlsx") {
+      const pwColumn = sourceColumns.length;
+      const numberFormat = digits ? `0.${"0".repeat(digits)}` : "0";
+      for (let rowIndex = 1; rowIndex <= rows.length; rowIndex += 1) {
+        const cell = sheet[global.XLSX.utils.encode_cell({ r: rowIndex, c: pwColumn })];
+        if (cell && cell.t === "n") cell.z = numberFormat;
+      }
       const workbook = global.XLSX.utils.book_new();
       global.XLSX.utils.book_append_sheet(workbook, sheet, "Weighing Data");
       const info = global.XLSX.utils.json_to_sheet([
@@ -126,11 +143,13 @@
       global.XLSX.utils.book_append_sheet(workbook, info, "Session Info");
       global.XLSX.writeFile(workbook, `${name}.xlsx`, { compression: true });
     } else {
-      const csv = global.XLSX.utils.sheet_to_csv(sheet, { FS: ",", RS: "\r\n" });
+      const csvRows = rows.map((row) => ({ ...row, PW: row.PW === "" ? "" : fixedDecimal(row.PW, digits) }));
+      const csvSheet = global.XLSX.utils.json_to_sheet(csvRows);
+      const csv = global.XLSX.utils.sheet_to_csv(csvSheet, { FS: ",", RS: "\r\n" });
       downloadBlob(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }), `${name}.csv`);
     }
     return rows.length;
   }
 
-  global.GdmWeighingUtils = { normalize, byUuid, groupProgress, overallProgress, prepareMerge, exportRows, exportSession };
+  global.GdmWeighingUtils = { normalize, decimalPlaces, fixedDecimal, byUuid, groupProgress, overallProgress, prepareMerge, exportRows, exportSession };
 })(window);
