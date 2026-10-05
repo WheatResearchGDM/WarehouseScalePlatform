@@ -227,6 +227,8 @@ export default function Home() {
   const fileRef = useRef<HTMLInputElement>(null);
   const scanRef = useRef<HTMLInputElement>(null);
   const scanAlertButtonRef = useRef<HTMLButtonElement>(null);
+  const scanAlertRef = useRef<ScanAlert | null>(null);
+  const scanAlertOpenedAtRef = useRef(0);
   const weightRef = useRef<HTMLInputElement>(null);
   const selectedRef = useRef<Plot | null>(null);
   const serialPortRef = useRef<SerialPortLike | null>(null);
@@ -243,8 +245,15 @@ export default function Home() {
   useEffect(() => { selectedRef.current = selected; }, [selected]);
 
   const closeScanAlert = useCallback(() => {
+    scanAlertRef.current = null;
     setScanAlert(null);
     window.setTimeout(() => { scanRef.current?.focus(); scanRef.current?.select(); }, 0);
+  }, []);
+
+  const openScanAlert = useCallback((alert: ScanAlert) => {
+    scanAlertRef.current = alert;
+    scanAlertOpenedAtRef.current = performance.now();
+    setScanAlert(alert);
   }, []);
 
   useEffect(() => {
@@ -252,8 +261,12 @@ export default function Home() {
     window.setTimeout(() => scanAlertButtonRef.current?.focus(), 0);
     const closeOnKeyboard = (event: KeyboardEvent) => {
       if (event.key === "Tab") { event.preventDefault(); scanAlertButtonRef.current?.focus(); return; }
-      if (event.key !== "Enter" && event.key !== "Escape") return;
-      event.preventDefault(); event.stopPropagation(); closeScanAlert();
+      if (event.key === "Enter") {
+        event.preventDefault(); event.stopPropagation();
+        if (performance.now() - scanAlertOpenedAtRef.current < 700) return;
+        closeScanAlert(); return;
+      }
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeScanAlert(); }
     };
     window.addEventListener("keydown", closeOnKeyboard, true);
     return () => window.removeEventListener("keydown", closeOnKeyboard, true);
@@ -302,6 +315,7 @@ export default function Home() {
     const nextWeights = nextSession ? await store.getWeights(db, nextSession.id) : [];
     const nextPlots = nextSession?.plots ?? [];
     exactPendingWeightRef.current = null; weightEditedRef.current = false;
+    scanAlertRef.current = null;
     setSession(nextSession); setPlots(nextPlots); setWeights(nextWeights); setSelected(null); setScanAlert(null);
     setSelectedTrials([...new Set(nextPlots.map((plot) => plot.entityName || "Unnamed trial"))]); setSort({ key: "", direction: "asc" });
     setScanValue(""); setWeightValue(""); setPage(1); setSessions(await store.listSessions(db));
@@ -401,6 +415,7 @@ export default function Home() {
   }
   function handleScan(event: FormEvent) {
     event.preventDefault();
+    if (scanAlertRef.current) return;
     if (!session) { toast.error("Import a workbook before weighing plots."); return; }
     const code = normalize(scanValue);
     const currentCode = selected ? normalize(scanMode === "feid" ? selected.feid : selected.uuid) : "";
@@ -411,12 +426,12 @@ export default function Home() {
         ? `${plotDisplayName(plot)} belongs to trial ${plot.entityName || "Unnamed trial"}, which is excluded by the current trial filter.`
         : `${scanMode.toUpperCase()} ${scanValue.trim() || "—"} was not found in this session.`;
       setSelected(null); setWeightValue(""); exactPendingWeightRef.current = null; weightEditedRef.current = false;
-      playScanTone("attention"); setScanError(message); setScanAlert({ kind: "unavailable", title: "Plot unavailable", message, actionLabel: "Scan again" }); return;
+      playScanTone("attention"); setScanError(message); openScanAlert({ kind: "unavailable", title: "Plot unavailable", message, actionLabel: "Scan again" }); return;
     }
     const record = weightsByUuid.get(normalize(plot.uuid));
     playScanTone(record ? "existing" : "found");
     selectPlot(plot);
-    if (record) setScanAlert({
+    if (record) openScanAlert({
       kind: "existing", title: "Plot already weighed",
       message: `${plotDisplayName(plot)} already has PW ${formatNumber(record.weight, decimalPlaces)}. Continue only if you want to replace this value.`,
       actionLabel: "Continue",
@@ -595,7 +610,7 @@ export default function Home() {
             <p className="mt-2 text-xs text-[#647a90]">Connect the scale, select FEID or UUID, then scan a plot to fill PW automatically.</p>
 
             <form onSubmit={handleScan} className="mt-4 grid gap-3 rounded-[5px] border border-[#cbdcec] bg-[#f8fbfe] p-3.5 sm:grid-cols-[190px_minmax(0,1fr)]">
-              <label><span className="mb-2 block text-sm font-bold text-[#365b80]">Identifier</span><NativeSelect value={scanMode} onChange={(event) => { setScanMode(event.target.value as "feid" | "uuid"); setSelected(null); setScanAlert(null); setScanError(""); setScanValue(""); scanRef.current?.focus(); }} className="h-14 w-full rounded-[5px] border-2 border-[#d1dfed] bg-white px-4 font-bold"><NativeSelectOption value="feid">Plot FEID</NativeSelectOption><NativeSelectOption value="uuid">Plot UUID</NativeSelectOption></NativeSelect></label>
+              <label><span className="mb-2 block text-sm font-bold text-[#365b80]">Identifier</span><NativeSelect value={scanMode} onChange={(event) => { scanAlertRef.current = null; setScanMode(event.target.value as "feid" | "uuid"); setSelected(null); setScanAlert(null); setScanError(""); setScanValue(""); scanRef.current?.focus(); }} className="h-14 w-full rounded-[5px] border-2 border-[#d1dfed] bg-white px-4 font-bold"><NativeSelectOption value="feid">Plot FEID</NativeSelectOption><NativeSelectOption value="uuid">Plot UUID</NativeSelectOption></NativeSelect></label>
               <label><span className="mb-2 block text-sm font-bold text-[#365b80]">Scanned code</span><div className="relative"><Barcode className="absolute left-4 top-1/2 size-6 -translate-y-1/2 text-[#6e94b9]" /><Input ref={scanRef} autoFocus value={scanValue} onChange={(event) => setScanValue(event.target.value)} className="h-14 rounded-[5px] border-2 border-[#d1dfed] bg-white pl-13 font-mono text-lg font-semibold" placeholder={scanMode === "feid" ? "Scan or enter the FEID" : "Scan or enter the UUID"} autoComplete="off" spellCheck={false} /></div></label>
             </form>
             <p className="mt-3 text-sm text-[#657b90]"><strong>Quick flow:</strong> scan to load a plot. When PW is filled, press Enter or scan the same plot again to save.</p>

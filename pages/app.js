@@ -9,7 +9,7 @@
     serialPort: null, serialReader: null, readLoop: null, keepReading: false, serialBuffer: "",
     serialFlushTimer: null, rawScaleWeight: null, scaleExponent: loadScaleExponent(), decimalPlaces: loadDecimalPlaces(), page: 1,
     exactPendingWeight: null, weightEdited: false,
-    scanAlert: null,
+    scanAlert: null, scanAlertOpenedAt: 0,
     selectedTrials: new Set(), sortKey: "", sortDirection: "asc", filteredPlots: [],
   };
   const byFeid = new Map();
@@ -72,6 +72,7 @@
   }
   function showScanAlert(kind, title, message, actionLabel) {
     state.scanAlert = kind;
+    state.scanAlertOpenedAt = performance.now();
     refs.scanAlert.className = `scan-alert scan-alert--${kind}`;
     refs.scanAlertTitle.textContent = title;
     refs.scanAlertMessage.textContent = message;
@@ -394,6 +395,7 @@
 
   refs.scanForm.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (state.scanAlert) return;
     if (!state.session) { showToast("Import a workbook before weighing plots.", true); return; }
     const scannedValue = refs.scanValue.value.trim();
     const code = normalize(refs.scanValue.value);
@@ -417,8 +419,12 @@
   document.addEventListener("keydown", (event) => {
     if (!state.scanAlert) return;
     if (event.key === "Tab") { event.preventDefault(); refs.scanAlertAction.focus(); return; }
-    if (event.key !== "Enter" && event.key !== "Escape") return;
-    event.preventDefault(); event.stopPropagation(); closeScanAlert();
+    if (event.key === "Enter") {
+      event.preventDefault(); event.stopPropagation();
+      if (performance.now() - state.scanAlertOpenedAt < 700) return;
+      closeScanAlert(); return;
+    }
+    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeScanAlert(); }
   }, true);
   refs.weightForm.addEventListener("submit", (event) => { event.preventDefault(); void saveCurrentWeight(); });
   refs.weight.addEventListener("input", () => { state.weightEdited = true; state.exactPendingWeight = null; });
