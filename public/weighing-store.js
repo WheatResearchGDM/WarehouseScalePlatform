@@ -44,6 +44,7 @@
     return `${baseName(fileName)} – ${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`;
   }
   function normalize(value) { return String(value || "").trim().toUpperCase(); }
+  function lotContextKey(sessionId) { return `lot-context::${sessionId}`; }
   async function getSetting(database, key) {
     const tx = database.transaction("settings", "readonly");
     const result = await requestResult(tx.objectStore("settings").get(key));
@@ -78,7 +79,7 @@
       weightsStore.put({
         key: `${session.id}::${normalize(plot.uuid)}`, sessionId: session.id, uuid: plot.uuid, feid: plot.feid,
         entityName: plot.entityName, obsName: plot.obsName, weight: Number(item.weight), weighedAt: timestamp,
-        updatedAt: timestamp, source: item.source || "import",
+        updatedAt: timestamp, source: item.source || "import", site: item.site ?? plot.site ?? "", storage: item.storage ?? "",
       });
     }
     tx.objectStore("settings").put({ key: ACTIVE_SESSION_KEY, value: session.id });
@@ -90,7 +91,7 @@
     const tx = database.transaction("weights", "readonly");
     return requestResult(tx.objectStore("weights").index("sessionId").getAll(sessionId));
   }
-  async function saveWeight(database, sessionId, plot, weight, source = "manual", weighedAt = new Date().toISOString()) {
+  async function saveWeight(database, sessionId, plot, weight, source = "manual", weighedAt = new Date().toISOString(), lot = {}) {
     const numericWeight = Number(weight);
     if (!sessionId || !plot?.uuid || !Number.isFinite(numericWeight) || numericWeight < 0) throw new Error("A valid plot and non-negative weight are required.");
     const parsed = new Date(weighedAt);
@@ -98,15 +99,23 @@
     const record = {
       key: `${sessionId}::${normalize(plot.uuid)}`, sessionId, uuid: plot.uuid, feid: plot.feid,
       entityName: plot.entityName, obsName: plot.obsName, weight: numericWeight, weighedAt: iso,
-      updatedAt: iso, source,
+      updatedAt: iso, source, site: String(lot.site ?? plot.site ?? "").trim(), storage: String(lot.storage ?? "").trim(),
     };
-    const tx = database.transaction(["weights", "sessions"], "readwrite");
+    const tx = database.transaction(["weights", "sessions", "settings"], "readwrite");
     tx.objectStore("weights").put(record);
     const sessionsStore = tx.objectStore("sessions");
     const session = await requestResult(sessionsStore.get(sessionId));
     if (!session) { tx.abort(); throw new Error("The active weighing session no longer exists."); }
     session.updatedAt = new Date().toISOString();
     sessionsStore.put(session);
+    if (Object.prototype.hasOwnProperty.call(lot, "keepForNext")) {
+      tx.objectStore("settings").put({
+        key: lotContextKey(sessionId),
+        value: lot.keepForNext
+          ? { keepForNext: true, hasValue: true, site: record.site, storage: record.storage }
+          : { keepForNext: false, hasValue: false, site: "", storage: "" },
+      });
+    }
     await transactionDone(tx);
     return record;
   }
@@ -127,7 +136,7 @@
       const record = {
         key: `${sessionId}::${normalize(plot.uuid)}`, sessionId, uuid: plot.uuid, feid: plot.feid,
         entityName: plot.entityName, obsName: plot.obsName, weight: Number(entry.weight), weighedAt: iso,
-        updatedAt: iso, source: entry.source || "import",
+        updatedAt: iso, source: entry.source || "import", site: entry.site ?? plot.site ?? "", storage: entry.storage ?? "",
       };
       store.put(record);
       records.push(record);
@@ -157,6 +166,7 @@
     for (const key of keys) store.delete(key);
     const active = await requestResult(tx.objectStore("settings").get(ACTIVE_SESSION_KEY));
     if (active?.value === id) tx.objectStore("settings").put({ key: ACTIVE_SESSION_KEY, value: null });
+    tx.objectStore("settings").delete(lotContextKey(id));
     await transactionDone(tx);
   }
   async function migrateLegacy(database) {
@@ -183,6 +193,19 @@
 
   global.GdmWeighingStore = {
     init, listSessions, getSession, createSession, getWeights, saveWeight, saveWeights, renameSession, deleteSession,
+    async getLotContext(database, sessionId) {
+      const value = await getSetting(database, lotContextKey(sessionId));
+      return value && typeof value === "object"
+        ? { keepForNext: value.keepForNext !== false, hasValue: value.hasValue === true, site: String(value.site || ""), storage: String(value.storage || "") }
+        : { keepForNext: true, hasValue: false, site: "", storage: "" };
+    },
+    setLotContext(database, sessionId, context) {
+      return setSetting(database, lotContextKey(sessionId), {
+        keepForNext: context?.keepForNext !== false,
+        hasValue: context?.hasValue === true,
+        site: String(context?.site || ""), storage: String(context?.storage || ""),
+      });
+    },
     setActiveSession(database, id) { return setSetting(database, ACTIVE_SESSION_KEY, id); },
     sessionName: localName, normalize,
   };

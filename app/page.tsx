@@ -14,25 +14,25 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Toaster } from "@/components/ui/sonner";
 
 type Plot = {
-  id: string; feid: string; uuid: string; entityName: string; trialType: string; site: string;
+  id: string; feid: string; uuid: string; seasonYear: string; entityName: string; trialType: string; site: string;
   location: string; row: string; column: string; entryCode: string; block: string; obsName: string;
   gid: string; gerName: string; initialPlot: number; finalPlot: number;
 };
 type WeightRecord = {
   key: string; sessionId: string; uuid: string; feid: string; entityName: string; obsName: string;
-  weight: number; weighedAt: string; updatedAt: string; source: string;
+  weight: number; weighedAt: string; updatedAt: string; source: string; site?: string; storage?: string;
 };
 type WeighingSession = {
   id: string; name: string; sourceFileName: string; createdAt: string; updatedAt: string; version: number; plots: Plot[];
 };
-type ImportedWeight = { uuid: string; weight: number; weighedAt: string; source?: string };
+type ImportedWeight = { uuid: string; weight: number; weighedAt: string; source?: string; site?: string; storage?: string };
 type ImportResult = {
   plots: Plot[]; importedWeights: ImportedWeight[]; invalidRows: number[]; invalidWeightRows: number[];
   fileName: string; sheetName: string;
 };
 type ProgressItem = {
   key: string; label: string; total: number; completed: number; remaining: number; percent: number;
-  initial?: number; final?: number; trialType?: string; location?: string;
+  trialType?: string; location?: string;
 };
 type OverallProgress = { total: number; completed: number; remaining: number; percent: number };
 type MergePlan = { ready: ImportedWeight[]; unresolved: ImportedWeight[]; ignored: number; unchanged: number; keptCurrent: number };
@@ -43,8 +43,10 @@ type StoreApi = {
   getSession(database: IDBDatabase, id: string | null): Promise<WeighingSession | null>;
   createSession(database: IDBDatabase, plots: Plot[], fileName: string, name?: string, initialWeights?: ImportedWeight[]): Promise<WeighingSession>;
   getWeights(database: IDBDatabase, sessionId: string): Promise<WeightRecord[]>;
-  saveWeight(database: IDBDatabase, sessionId: string, plot: Plot, weight: number, source?: string, weighedAt?: string): Promise<WeightRecord>;
+  saveWeight(database: IDBDatabase, sessionId: string, plot: Plot, weight: number, source?: string, weighedAt?: string, lot?: { site: string; storage: string; keepForNext: boolean }): Promise<WeightRecord>;
   saveWeights(database: IDBDatabase, sessionId: string, entries: ImportedWeight[]): Promise<WeightRecord[]>;
+  getLotContext(database: IDBDatabase, sessionId: string): Promise<{ keepForNext: boolean; hasValue: boolean; site: string; storage: string }>;
+  setLotContext(database: IDBDatabase, sessionId: string, context: { keepForNext: boolean; hasValue: boolean; site: string; storage: string }): Promise<void>;
   renameSession(database: IDBDatabase, id: string, name: string): Promise<WeighingSession>;
   deleteSession(database: IDBDatabase, id: string): Promise<void>;
   setActiveSession(database: IDBDatabase, id: string | null): Promise<void>;
@@ -55,6 +57,7 @@ type UtilsApi = {
   overallProgress(plots: Plot[], weights: WeightRecord[]): OverallProgress;
   prepareMerge(plots: Plot[], current: WeightRecord[], imported: ImportedWeight[]): MergePlan;
   exportSession(session: WeighingSession, weights: WeightRecord[], format: "xlsx" | "csv", plots?: Plot[], decimalPlaces?: number): number;
+  exportLots(session: WeighingSession, weights: WeightRecord[], format: "xlsx" | "csv", plots?: Plot[], decimalPlaces?: number): number;
 };
 type ImportApi = { parseExcelFile(file: File): Promise<ImportResult> };
 type SerialPortLike = {
@@ -139,35 +142,35 @@ function playScanTone(kind: "found" | "existing" | "attention") {
 
 function calculateProgress(plots: Plot[], weights: WeightRecord[], grouping: "trial" | "location") {
   const records = new Set(weights.map((item) => normalize(item.uuid)));
+  if (grouping === "location") {
+    const locations = new Map<string, ProgressItem>();
+    for (const plot of plots) {
+      const key = plot.location || "Unspecified";
+      const current = locations.get(key) ?? { key, label: key, total: 0, completed: 0, remaining: 0, percent: 0 };
+      current.total += 1;
+      if (records.has(normalize(plot.uuid))) current.completed += 1;
+      current.remaining = Math.max(current.total - current.completed, 0);
+      current.percent = current.total ? Math.min(Math.round((current.completed / current.total) * 100), 100) : 0;
+      locations.set(key, current);
+    }
+    return Array.from(locations.values());
+  }
   const trials = new Map<string, Plot[]>();
   for (const plot of plots) {
     const key = plot.entityName || "Unnamed trial";
     trials.set(key, [...(trials.get(key) ?? []), plot]);
   }
   const trialItems: ProgressItem[] = Array.from(trials.entries()).map(([entityName, items]) => {
-    const initial = Math.min(...items.map((item) => item.initialPlot));
-    const final = Math.max(...items.map((item) => item.finalPlot));
-    const total = Math.max(final - initial + 1, 0);
+    const total = items.length;
     const completed = items.filter((item) => records.has(normalize(item.uuid))).length;
     return {
       key: entityName, label: entityName, trialType: items[0]?.trialType || "—",
-      location: items[0]?.location || "Unspecified", initial, final, total, completed,
+      location: items[0]?.location || "Unspecified", total, completed,
       remaining: Math.max(total - completed, 0),
       percent: total ? Math.min(Math.round((completed / total) * 100), 100) : 0,
     };
   });
-  if (grouping === "trial") return trialItems;
-  const locations = new Map<string, ProgressItem>();
-  for (const trial of trialItems) {
-    const key = trial.location || "Unspecified";
-    const current = locations.get(key) ?? { key, label: key, total: 0, completed: 0, remaining: 0, percent: 0 };
-    current.total += trial.total;
-    current.completed += trial.completed;
-    current.remaining = Math.max(current.total - current.completed, 0);
-    current.percent = current.total ? Math.min(Math.round((current.completed / current.total) * 100), 100) : 0;
-    locations.set(key, current);
-  }
-  return Array.from(locations.values());
+  return trialItems;
 }
 
 function calculateOverall(plots: Plot[], weights: WeightRecord[]): OverallProgress {
@@ -187,7 +190,6 @@ function DonutCard({ item }: { item: ProgressItem }) {
       <div className="min-w-0">
         <h3 className="break-words text-sm font-extrabold leading-tight text-[#173a61]">{item.label}</h3>
         <p className="mt-2 text-xs text-[#657b90]"><strong>{item.completed}</strong> weighed · <strong>{item.remaining}</strong> pending</p>
-        {item.initial !== undefined && <p className="mt-1 text-xs text-[#657b90]">Plots {item.initial}–{item.final}</p>}
       </div>
     </article>
   );
@@ -208,6 +210,12 @@ export default function Home() {
   const [scanAlert, setScanAlert] = useState<ScanAlert | null>(null);
   const [selected, setSelected] = useState<Plot | null>(null);
   const [weightValue, setWeightValue] = useState("");
+  const [lotSite, setLotSite] = useState("");
+  const [lotStorage, setLotStorage] = useState("");
+  const [carriedSite, setCarriedSite] = useState("");
+  const [carriedStorage, setCarriedStorage] = useState("");
+  const [keepLotContext, setKeepLotContext] = useState(true);
+  const [hasLotContext, setHasLotContext] = useState(false);
   const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState("");
   const [trialFilter, setTrialFilter] = useState("");
@@ -311,7 +319,7 @@ export default function Home() {
     const needle = normalize(search);
     const rows = activePlots.filter((plot) => {
       const weighed = weightsByUuid.has(normalize(plot.uuid));
-      const haystack = normalize([plot.feid, plot.uuid, plot.obsName, plot.entityName, plot.gerName, plot.location].join(" "));
+      const haystack = normalize([plot.feid, plot.uuid, plot.seasonYear, plot.obsName, plot.entityName, plot.gerName, plot.location].join(" "));
       return (!needle || haystack.includes(needle)) && (!trialFilter || plot.entityName === trialFilter)
         && (!locationFilter || plot.location === locationFilter) && (!statusFilter || (statusFilter === "weighed" ? weighed : !weighed));
     });
@@ -337,10 +345,13 @@ export default function Home() {
     if (!store) throw new Error("Session storage is unavailable.");
     const nextSession = await store.getSession(db, id);
     const nextWeights = nextSession ? await store.getWeights(db, nextSession.id) : [];
+    const lotContext = nextSession ? await store.getLotContext(db, nextSession.id) : { keepForNext: true, hasValue: false, site: "", storage: "" };
     const nextPlots = nextSession?.plots ?? [];
     exactPendingWeightRef.current = null; weightEditedRef.current = false;
     scanAlertRef.current = null;
     setSession(nextSession); setPlots(nextPlots); setWeights(nextWeights); setSelected(null); setScanAlert(null);
+    setKeepLotContext(lotContext.keepForNext); setHasLotContext(lotContext.hasValue);
+    setCarriedSite(lotContext.site); setCarriedStorage(lotContext.storage); setLotSite(""); setLotStorage("");
     setSelectedTrials([...new Set(nextPlots.map((plot) => plot.entityName || "Unnamed trial"))]); setSort({ key: "", direction: "asc" });
     setScanValue(""); setWeightValue(""); setPage(1); setSessions(await store.listSessions(db));
     window.setTimeout(() => scanRef.current?.focus(), 0);
@@ -435,6 +446,14 @@ export default function Home() {
     exactPendingWeightRef.current = record ? Number(record.weight) : null;
     weightEditedRef.current = false;
     setWeightValue(record ? formatInputNumber(Number(record.weight), decimalPlaces) : "");
+    if (record) {
+      setLotSite(Object.prototype.hasOwnProperty.call(record, "site") ? String(record.site || "") : plot.site || "");
+      setLotStorage(record.storage || "");
+    } else if (!keepLotContext || !hasLotContext) {
+      setLotSite(plot.site || ""); setLotStorage("");
+    } else {
+      setLotSite(carriedSite); setLotStorage(carriedStorage);
+    }
     window.setTimeout(() => scanRef.current?.focus(), 0);
   }
   function handleScan(event: FormEvent) {
@@ -467,12 +486,20 @@ export default function Home() {
     if (!Number.isFinite(value) || value < 0) { toast.error("Enter or wait for a valid non-negative scale weight."); weightRef.current?.focus(); return; }
     setSaving(true);
     try {
-      const saved = await window.GdmWeighingStore.saveWeight(database, session.id, selected, value, scaleConnected ? "serial" : "manual");
+      const saved = await window.GdmWeighingStore.saveWeight(
+        database, session.id, selected, value, scaleConnected ? "serial" : "manual", undefined,
+        { site: lotSite, storage: lotStorage, keepForNext: keepLotContext },
+      );
       setWeights((current) => [saved, ...current.filter((item) => normalize(item.uuid) !== normalize(saved.uuid))]);
       setSession((current) => current ? { ...current, updatedAt: new Date().toISOString() } : current);
+      if (keepLotContext) {
+        setCarriedSite(saved.site || ""); setCarriedStorage(saved.storage || ""); setHasLotContext(true);
+      } else {
+        setCarriedSite(""); setCarriedStorage(""); setHasLotContext(false);
+      }
       toast.success(`PW ${formatNumber(value, decimalPlaces)} saved for plot ${selected.obsName}.`);
       exactPendingWeightRef.current = null; weightEditedRef.current = false;
-      setSelected(null); setScanValue(""); setWeightValue(""); window.setTimeout(() => scanRef.current?.focus(), 0);
+      setSelected(null); setScanValue(""); setWeightValue(""); setLotSite(""); setLotStorage(""); window.setTimeout(() => scanRef.current?.focus(), 0);
     } catch (error) { toast.error(error instanceof Error ? error.message : "Could not save the weight."); }
     finally { setSaving(false); }
   }
@@ -483,6 +510,26 @@ export default function Home() {
     if (!exportPlots.length) { toast.error("No plot records match the current filters."); return; }
     try { const count = window.GdmWeighingUtils.exportSession(session, weights, format, exportPlots, decimalPlaces); toast.success(`${count} ${filteredOnly ? "filtered " : ""}plot records exported to ${format === "xlsx" ? "Excel" : "CSV"} with ${decimalPlaces} decimal place${decimalPlaces === 1 ? "" : "s"}.`); }
     catch (error) { toast.error(error instanceof Error ? error.message : "Could not export the session."); }
+  }
+
+  function exportLots(format: "xlsx" | "csv") {
+    if (!session || !window.GdmWeighingUtils) { toast.error("Load a weighing session before exporting lots."); return; }
+    try {
+      const count = window.GdmWeighingUtils.exportLots(session, weights, format, filteredPlots, decimalPlaces);
+      toast.success(`${count} filtered lot record${count === 1 ? "" : "s"} exported to ${format === "xlsx" ? "Excel" : "CSV"}.`);
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Could not export lots."); }
+  }
+
+  async function changeKeepLotContext(keep: boolean) {
+    setKeepLotContext(keep);
+    if (!keep) { setCarriedSite(""); setCarriedStorage(""); setHasLotContext(false); }
+    if (!database || !session || !window.GdmWeighingStore) return;
+    try {
+      await window.GdmWeighingStore.setLotContext(database, session.id, {
+        keepForNext: keep, hasValue: keep ? hasLotContext : false,
+        site: keep ? carriedSite : "", storage: keep ? carriedStorage : "",
+      });
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Could not save the lot field preference."); }
   }
 
   const applyScaleWeight = useCallback((raw: number) => {
@@ -556,7 +603,7 @@ export default function Home() {
   }
   const paginationSummary = filteredPlots.length ? `${(safePage - 1) * PAGE_SIZE + 1}–${Math.min(safePage * PAGE_SIZE, filteredPlots.length)} of ${filteredPlots.length}` : "0–0 of 0";
   const tableColumns = [
-    ["Status", "status"], ["Entity name", "entityName"], ["(OBS) Name", "obsName"], ["FEID", "feid"], ["UUID", "uuid"], ["Block", "block"],
+    ["Status", "status"], ["Season year", "seasonYear"], ["Entity name", "entityName"], ["(OBS) Name", "obsName"], ["FEID", "feid"], ["UUID", "uuid"], ["Block", "block"],
     ["Entry code", "entryCode"], ["Row", "row"], ["Column", "column"], ["(GER) Name", "gerName"], ["PW", "weight"], ["Weighed at", "weighedAt"],
   ];
 
@@ -647,8 +694,17 @@ export default function Home() {
           {selected && <article className="overflow-hidden rounded-lg border border-[#cbdcec] bg-white shadow-[0_10px_28px_rgba(26,59,93,0.08)]">
             <div className="bg-[#1f4269] p-5 text-white sm:p-6"><div className="mb-5 flex justify-between gap-3"><span className="rounded-full bg-[#d9e9f6] px-3 py-1.5 text-sm font-black uppercase text-[#173f66]">✓ Plot found</span>{existingWeight && <span className="rounded-full bg-[#f5cf77] px-3 py-1.5 text-sm font-bold text-[#6a4700]">Already weighed: PW {formatNumber(existingWeight.weight, decimalPlaces)}</span>}</div><div className="grid gap-5 md:grid-cols-[1.45fr_.55fr]"><div><p className="text-xs font-bold uppercase tracking-[.14em] text-[#bbcee1]">Entity name</p><h2 className="text-3xl font-extrabold">{selected.entityName}</h2><p className="mt-5 text-xs font-bold uppercase tracking-[.14em] text-[#bbcee1]">(OBS) Name</p><p className="text-5xl font-black">{selected.obsName}</p></div><div className="rounded-md border border-white/20 bg-white/10 p-4"><p className="text-xs font-bold uppercase tracking-[.12em] text-[#bbcee1]">(GER) Name</p><p className="mt-2 text-xl font-extrabold">{selected.gerName || "—"}</p><p className="mt-4 flex items-center gap-2 text-sm text-[#c7d7e7]"><MapPin className="size-4" /> {selected.location || "Unspecified"} · {selected.site || "Unspecified"}</p></div></div></div>
             <div className="grid gap-6 p-5 sm:p-7 xl:grid-cols-[1fr_330px]">
-              <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">{[["Block",selected.block],["Entry code",selected.entryCode],["Row",selected.row],["Column",selected.column]].map(([label,value]) => <div key={label} className="rounded-md border border-[#cfdeeb] bg-[#f7fafe] p-4"><dt className="text-xs font-bold uppercase text-[#6d8195]">{label}</dt><dd className="mt-1 text-2xl font-black">{value || "—"}</dd></div>)}<div className="col-span-2 rounded-md border border-[#cfdeeb] bg-[#f7fafe] p-4 sm:col-span-4"><dt className="text-xs font-bold uppercase text-[#6d8195]">Identifiers</dt><dd className="mt-2 grid gap-2 text-sm sm:grid-cols-2"><span><strong>FEID:</strong> {selected.feid}</span><span className="break-all"><strong>UUID:</strong> {selected.uuid}</span></dd></div></dl>
-              <form onSubmit={(event) => { event.preventDefault(); void saveCurrentWeight(); }} className="rounded-md border border-[#cbdcec] bg-[#eaf2f9] p-5"><label htmlFor="plot-weight" className="flex items-center gap-2 text-sm font-bold uppercase tracking-[.1em]"><Scale className="size-4" /> Plot weight (PW)</label><Input id="plot-weight" ref={weightRef} inputMode="decimal" value={weightValue} onChange={(event) => { weightEditedRef.current = true; exactPendingWeightRef.current = null; setWeightValue(event.target.value); }} className="mt-3 h-16 border-2 bg-white px-4 text-3xl font-black" placeholder={formatInputNumber(0, decimalPlaces)} /><Button type="submit" disabled={saving} className="mt-3 h-12 w-full rounded-[5px] bg-[#1f4269] text-base font-black">{saving ? <LoaderCircle className="animate-spin" /> : <Check />} {existingWeight ? "Update PW" : "Save PW"}</Button></form>
+              <dl className="grid grid-cols-2 gap-3 sm:grid-cols-5">{[["Season year",selected.seasonYear],["Block",selected.block],["Entry code",selected.entryCode],["Row",selected.row],["Column",selected.column]].map(([label,value]) => <div key={label} className="rounded-md border border-[#cfdeeb] bg-[#f7fafe] p-4"><dt className="text-xs font-bold uppercase text-[#6d8195]">{label}</dt><dd className="mt-1 text-2xl font-black">{value || "—"}</dd></div>)}<div className="col-span-2 rounded-md border border-[#cfdeeb] bg-[#f7fafe] p-4 sm:col-span-5"><dt className="text-xs font-bold uppercase text-[#6d8195]">Identifiers</dt><dd className="mt-2 grid gap-2 text-sm sm:grid-cols-2"><span><strong>FEID:</strong> {selected.feid}</span><span className="break-all"><strong>UUID:</strong> {selected.uuid}</span></dd></div></dl>
+              <form onSubmit={(event) => { event.preventDefault(); void saveCurrentWeight(); }} className="rounded-md border border-[#cbdcec] bg-[#eaf2f9] p-5">
+                <label htmlFor="plot-weight" className="flex items-center gap-2 text-sm font-bold uppercase tracking-[.1em]"><Scale className="size-4" /> Plot weight (PW)</label>
+                <Input id="plot-weight" ref={weightRef} inputMode="decimal" value={weightValue} onChange={(event) => { weightEditedRef.current = true; exactPendingWeightRef.current = null; setWeightValue(event.target.value); }} className="mt-3 h-16 border-2 bg-white px-4 text-3xl font-black" placeholder={formatInputNumber(0, decimalPlaces)} />
+                <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+                  <label className="text-xs font-bold uppercase tracking-[.08em] text-[#526f89]">Site<Input value={lotSite} onChange={(event) => setLotSite(event.target.value)} className="mt-1 h-10 bg-white text-sm font-semibold normal-case tracking-normal" placeholder={selected.site || "Site"} /></label>
+                  <label className="text-xs font-bold uppercase tracking-[.08em] text-[#526f89]">Storage<Input value={lotStorage} onChange={(event) => setLotStorage(event.target.value)} className="mt-1 h-10 bg-white text-sm font-semibold normal-case tracking-normal" placeholder="Storage" /></label>
+                </div>
+                <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs font-bold text-[#365b80]"><input type="checkbox" checked={keepLotContext} onChange={(event) => void changeKeepLotContext(event.target.checked)} className="mt-0.5 accent-[#1f4269]" /><span>Keep Site and Storage for next plot</span></label>
+                <Button type="submit" disabled={saving} className="mt-3 h-12 w-full rounded-[5px] bg-[#1f4269] text-base font-black">{saving ? <LoaderCircle className="animate-spin" /> : <Check />} {existingWeight ? "Update PW" : "Save PW"}</Button>
+              </form>
             </div>
           </article>}
 
@@ -659,10 +715,10 @@ export default function Home() {
           <div className="flex items-start justify-between border-b-2 border-[#d6e3ef] pb-3"><div><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]">◴ Real-time report</p><h1 className="text-[29px] font-extrabold">Weighing dashboard</h1></div><span className="rounded-full bg-[#eaf3fb] px-3 py-1.5 text-sm font-bold text-[#315f8b]">● Live local data</span></div>
           <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-[.55fr_.55fr_.55fr_1.4fr]">{[["Total expected",overall.total],["Weighed",overall.completed],["Pending",overall.remaining]].map(([label,value]) => <article key={label} className="rounded-lg bg-[#1f4269] p-5 text-white"><p className="text-xs font-bold uppercase tracking-[.08em] text-white/65">{label}</p><strong className="text-3xl">{value}</strong></article>)}<article className="rounded-lg bg-[#1f4269] p-5 text-white md:col-span-3 xl:col-span-1"><p className="text-xs font-bold uppercase tracking-[.08em] text-white/65">Completion</p><strong className="text-3xl">{overall.percent}%</strong><div className="mt-3 h-2 overflow-hidden rounded-full bg-white/15"><div className="h-full bg-[#8bb7df]" style={{ width: `${overall.percent}%` }} /></div></article></div>
           {[{ title: "Progress by trial", items: trialProgress, icon: "Trials" }, { title: "Progress by location", items: locationProgress, icon: "Locations" }].map((group) => <section key={group.title} className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,.08)] sm:p-6"><div className="border-b-2 border-[#d6e3ef] pb-3"><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]">{group.icon}</p><h2 className="text-2xl font-extrabold">{group.title}</h2></div><div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{group.items.length ? group.items.map((item) => <DonutCard key={item.key} item={item} />) : <p className="text-sm text-[#657b90]">No data available for this session.</p>}</div></section>)}
-          <section className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,.08)] sm:p-6"><div className="flex flex-wrap items-end justify-between gap-3 border-b-2 border-[#d6e3ef] pb-3"><div><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]"><Gauge className="mr-1 inline size-4" /> Plot records</p><h2 className="text-2xl font-extrabold">Weighing data</h2></div><div className="flex flex-wrap items-center justify-end gap-2"><strong className="mr-1 text-sm text-[#60768d]">{filteredPlots.length} record{filteredPlots.length === 1 ? "" : "s"}</strong><Button type="button" disabled={!filteredPlots.length} onClick={() => exportSession("xlsx", true)} className="h-9 bg-[#c88918] text-white hover:bg-[#b77710]"><Download className="size-4" /> Export filtered Excel</Button><Button type="button" disabled={!filteredPlots.length} onClick={() => exportSession("csv", true)} className="h-9 bg-[#c88918] text-white hover:bg-[#b77710]"><Download className="size-4" /> Export filtered CSV</Button></div></div>
+          <section className="rounded-lg border border-[#cbdcec] bg-white p-5 shadow-[0_10px_28px_rgba(26,59,93,.08)] sm:p-6"><div className="flex flex-wrap items-end justify-between gap-3 border-b-2 border-[#d6e3ef] pb-3"><div><p className="text-sm font-bold uppercase tracking-[.1em] text-[#315b86]"><Gauge className="mr-1 inline size-4" /> Plot records</p><h2 className="text-2xl font-extrabold">Weighing data</h2></div><div className="flex flex-wrap items-center justify-end gap-2"><strong className="mr-1 text-sm text-[#60768d]">{filteredPlots.length} record{filteredPlots.length === 1 ? "" : "s"}</strong><Button type="button" disabled={!filteredPlots.length} onClick={() => exportSession("xlsx", true)} className="h-9 bg-[#c88918] text-white hover:bg-[#b77710]"><Download className="size-4" /> Export filtered Excel</Button><Button type="button" disabled={!filteredPlots.length} onClick={() => exportSession("csv", true)} className="h-9 bg-[#c88918] text-white hover:bg-[#b77710]"><Download className="size-4" /> Export filtered CSV</Button><Button type="button" disabled={!filteredPlots.some((plot) => weightsByUuid.has(normalize(plot.uuid)))} onClick={() => exportLots("xlsx")} className="h-9 bg-[#315f8b] text-white hover:bg-[#244b70]"><Download className="size-4" /> Export lots Excel</Button><Button type="button" disabled={!filteredPlots.some((plot) => weightsByUuid.has(normalize(plot.uuid)))} onClick={() => exportLots("csv")} className="h-9 bg-[#315f8b] text-white hover:bg-[#244b70]"><Download className="size-4" /> Export lots CSV</Button></div></div>
             <div className="my-4 grid gap-2 md:grid-cols-2 xl:grid-cols-[1.5fr_.7fr_.7fr_.7fr]"><div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#6e94b9]" /><Input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} className="h-11 pl-9" placeholder="Search FEID, UUID, OBS or names…" /></div><NativeSelect value={trialFilter} onChange={(event) => { setTrialFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All trials</NativeSelectOption>{trials.filter((value) => selectedTrialSet.has(value)).map((value) => <NativeSelectOption key={value} value={value}>{value}</NativeSelectOption>)}</NativeSelect><NativeSelect value={locationFilter} onChange={(event) => { setLocationFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All locations</NativeSelectOption>{locations.map((value) => <NativeSelectOption key={value} value={value}>{value}</NativeSelectOption>)}</NativeSelect><NativeSelect value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setPage(1); }} className="h-11 bg-white px-2"><NativeSelectOption value="">All statuses</NativeSelectOption><NativeSelectOption value="weighed">Weighed</NativeSelectOption><NativeSelectOption value="pending">Pending</NativeSelectOption></NativeSelect></div>
             <div className="mb-3 flex flex-col justify-between gap-3 text-sm text-[#60768d] sm:flex-row sm:items-center"><span>{paginationSummary}</span><div className="flex items-center gap-2"><Button variant="outline" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(value - 1, 1))}>← Previous</Button><span>Page {safePage} of {pageCount}</span><Button variant="outline" disabled={safePage >= pageCount} onClick={() => setPage((value) => Math.min(value + 1, pageCount))}>Next →</Button></div></div>
-            <div className="overflow-auto rounded-lg border border-[#d4e0eb]"><table className="w-full whitespace-nowrap text-left text-xs"><thead className="bg-[#1f4269] text-white"><tr>{tableColumns.map(([label,key]) => <th key={key} className="p-0 text-[11px] uppercase tracking-wide"><button type="button" onClick={() => changeSort(key)} className="w-full p-3 text-left font-bold">{label} <span className={sort.key === key ? "text-white" : "text-[#9fc0df]"}>{sort.key === key ? (sort.direction === "asc" ? "↑" : "↓") : "↕"}</span></button></th>)}</tr></thead><tbody>{pageRows.length ? pageRows.map((plot,index) => { const record = weightsByUuid.get(normalize(plot.uuid)); return <tr key={plot.uuid} className={index % 2 ? "bg-[#f7fafd]" : "bg-white"}><td className="p-2.5"><span className={`rounded-full px-2 py-1 font-bold ${record ? "bg-[#daf0e9] text-[#1d6e59]" : "bg-[#eef1f4] text-[#6b7b88]"}`}>{record ? "Weighed" : "Pending"}</span></td>{[plot.entityName,plot.obsName,plot.feid,plot.uuid,plot.block,plot.entryCode,plot.row,plot.column,plot.gerName || "—"].map((value,i) => <td key={i} className="max-w-64 overflow-hidden text-ellipsis border-b border-[#e0e8ef] p-2.5" title={value}>{value}</td>)}<td className="border-b p-2.5">{record ? formatNumber(record.weight, decimalPlaces) : "—"}</td><td className="border-b p-2.5">{record ? formatDateTime(record.weighedAt || record.updatedAt) : "—"}</td></tr>; }) : <tr><td colSpan={12} className="p-8 text-center text-[#657b90]">No plots match the current filters.</td></tr>}</tbody></table></div>
+            <div className="overflow-auto rounded-lg border border-[#d4e0eb]"><table className="w-full whitespace-nowrap text-left text-xs"><thead className="bg-[#1f4269] text-white"><tr>{tableColumns.map(([label,key]) => <th key={key} className="p-0 text-[11px] uppercase tracking-wide"><button type="button" onClick={() => changeSort(key)} className="w-full p-3 text-left font-bold">{label} <span className={sort.key === key ? "text-white" : "text-[#9fc0df]"}>{sort.key === key ? (sort.direction === "asc" ? "↑" : "↓") : "↕"}</span></button></th>)}</tr></thead><tbody>{pageRows.length ? pageRows.map((plot,index) => { const record = weightsByUuid.get(normalize(plot.uuid)); return <tr key={plot.uuid} className={index % 2 ? "bg-[#f7fafd]" : "bg-white"}><td className="p-2.5"><span className={`rounded-full px-2 py-1 font-bold ${record ? "bg-[#daf0e9] text-[#1d6e59]" : "bg-[#eef1f4] text-[#6b7b88]"}`}>{record ? "Weighed" : "Pending"}</span></td>{[plot.seasonYear,plot.entityName,plot.obsName,plot.feid,plot.uuid,plot.block,plot.entryCode,plot.row,plot.column,plot.gerName || "—"].map((value,i) => <td key={i} className="max-w-64 overflow-hidden text-ellipsis border-b border-[#e0e8ef] p-2.5" title={value}>{value}</td>)}<td className="border-b p-2.5">{record ? formatNumber(record.weight, decimalPlaces) : "—"}</td><td className="border-b p-2.5">{record ? formatDateTime(record.weighedAt || record.updatedAt) : "—"}</td></tr>; }) : <tr><td colSpan={13} className="p-8 text-center text-[#657b90]">No plots match the current filters.</td></tr>}</tbody></table></div>
             <div className="mt-4 flex flex-col justify-between gap-3 text-sm text-[#60768d] sm:flex-row sm:items-center"><span>{paginationSummary}</span><div className="flex items-center gap-2"><Button variant="outline" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(value - 1, 1))}>← Previous</Button><span>Page {safePage} of {pageCount}</span><Button variant="outline" disabled={safePage >= pageCount} onClick={() => setPage((value) => Math.min(value + 1, pageCount))}>Next →</Button></div></div>
           </section>
         </section>

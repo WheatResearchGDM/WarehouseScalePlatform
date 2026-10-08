@@ -20,17 +20,18 @@ na própria tela antes da conexão.
 - conferência de Entity name, (OBS) Name, Block, Entry code, Row, Column e (GER) Name;
 - registro e atualização do PW (Plot weight);
 - conexão direta com balanças pela porta COM usando Web Serial, com velocidade configurável;
-- fator de escala configurável de `10⁰` a `10⁶` para normalizar a leitura bruta da balança;
+- fator de escala configurável para multiplicar ou dividir a leitura bruta de `10¹` a `10¹⁰`;
 - preenchimento automático do PW a partir da leitura serial;
 - importação de arquivos Excel `.xlsx` ou `.xls` pelo operador;
-- exportação das parcelas pesadas em CSV compatível com Excel;
-- progresso em tempo real por ensaio, calculado pelos intervalos Initial plot e Final plot;
+- exportação das sessões e dos lotes filtrados em Excel ou CSV;
+- registro de Site e Storage por pesagem, com repetição opcional para a próxima parcela;
+- progresso em tempo real por ensaio e local, calculado pela quantidade real de parcelas importadas;
 - interface responsiva com a identidade visual da GDM;
 - persistência em Cloudflare D1 e atualização automática entre dispositivos.
 
 ## Dados
 
-O aplicativo inicia sem uma base fixa. O operador deve importar a primeira aba de um Excel que contenha os cabeçalhos: `ID`, `FEID`, `UUID`, `Entity name`, `Trial type`, `Site`, `Location`, `Row`, `Column`, `Entry code`, `Block`, `(OBS) Name`, `GID`, `(GER) Name`, `Initial plot`, `Final plot` e `PW`. A planilha importada fica salva no navegador do equipamento.
+O aplicativo inicia sem uma base fixa. O operador deve importar a primeira aba de um Excel que contenha os cabeçalhos: `ID`, `FEID`, `UUID`, `Season year`, `Entity name`, `Trial type`, `Site`, `Location`, `Row`, `Column`, `Entry code`, `Block`, `(OBS) Name`, `GID`, `(GER) Name`, `Initial plot`, `Final plot` e `PW`. A planilha importada fica salva no navegador do equipamento. `Initial plot` e `Final plot` permanecem no template por compatibilidade, mas não são usados nos cálculos de progresso.
 
 ## Desenvolvimento
 

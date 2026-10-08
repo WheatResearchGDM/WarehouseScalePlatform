@@ -9,6 +9,7 @@
     serialPort: null, serialReader: null, readLoop: null, keepReading: false, serialBuffer: "",
     serialFlushTimer: null, rawScaleWeight: null, scaleExponent: loadScaleExponent(), decimalPlaces: loadDecimalPlaces(), page: 1,
     exactPendingWeight: null, weightEdited: false,
+    lotSite: "", lotStorage: "", carriedSite: "", carriedStorage: "", keepLotContext: true, hasLotContext: false,
     scanAlert: null, scanAlertOpenedAt: 0,
     selectedTrials: new Set(), sortKey: "", sortDirection: "asc", filteredPlots: [],
   };
@@ -23,14 +24,14 @@
     weighingView: $("weighing-view"), dashboardView: $("dashboard-view"),
     importData: $("import-data"), dataFile: $("data-file"), exportExcel: $("export-excel"), exportCsv: $("export-csv"), datasetNote: $("dataset-note"),
     scanForm: $("scan-form"), scanMode: $("scan-mode"), scanValue: $("scan-value"), scanError: $("scan-error"),
-    plotCard: $("plot-card"), weightForm: $("weight-form"), weight: $("plot-weight"), saveButton: $("save-button"), existingBadge: $("existing-badge"),
+    plotCard: $("plot-card"), weightForm: $("weight-form"), weight: $("plot-weight"), lotSite: $("lot-site"), lotStorage: $("lot-storage"), keepLotContext: $("keep-lot-context"), saveButton: $("save-button"), existingBadge: $("existing-badge"),
     recentList: $("recent-list"), recentEmpty: $("recent-empty"), toast: $("toast"),
     scanAlert: $("scan-alert"), scanAlertTitle: $("scan-alert-title"), scanAlertMessage: $("scan-alert-message"), scanAlertAction: $("scan-alert-action"), scanAlertUpdate: $("scan-alert-update"), scanAlertHint: $("scan-alert-hint"),
     connectScale: $("connect-scale"), baudRate: $("baud-rate"), scaleFactor: $("scale-factor"), decimalPlaces: $("decimal-places"), scaleStatus: $("scale-status"), scaleWeight: $("scale-weight"), scaleReadingNote: $("scale-reading-note"), serialHelp: $("serial-help"),
     tableSearch: $("table-search"), trialFilter: $("trial-filter"), locationFilter: $("location-filter"), statusFilter: $("status-filter"), tableBody: $("plot-table-body"),
     pagePrev: $("page-prev"), pageNext: $("page-next"), pageNumber: $("page-number"), pageSummary: $("page-summary"), tableCount: $("table-count"),
     pagePrevTop: $("page-prev-top"), pageNextTop: $("page-next-top"), pageNumberTop: $("page-number-top"), pageSummaryTop: $("page-summary-top"),
-    dashboardExportExcel: $("dashboard-export-excel"), dashboardExportCsv: $("dashboard-export-csv"),
+    dashboardExportExcel: $("dashboard-export-excel"), dashboardExportCsv: $("dashboard-export-csv"), dashboardLotsExcel: $("dashboard-lots-excel"), dashboardLotsCsv: $("dashboard-lots-csv"),
   };
 
   function loadScaleExponent() {
@@ -133,6 +134,11 @@
     state.session = id ? await window.GdmWeighingStore.getSession(state.database, id) : null;
     state.plots = state.session?.plots || [];
     state.weights = state.session ? await window.GdmWeighingStore.getWeights(state.database, state.session.id) : [];
+    const lotContext = state.session
+      ? await window.GdmWeighingStore.getLotContext(state.database, state.session.id)
+      : { keepForNext: true, hasValue: false, site: "", storage: "" };
+    state.keepLotContext = lotContext.keepForNext; state.hasLotContext = lotContext.hasValue;
+    state.carriedSite = lotContext.site; state.carriedStorage = lotContext.storage;
     state.selected = null;
     state.scanAlert = null;
     refs.scanAlert.hidden = true;
@@ -146,6 +152,7 @@
     refs.plotCard.hidden = true;
     refs.scanValue.value = "";
     refs.weight.value = "";
+    refs.lotSite.value = ""; refs.lotStorage.value = ""; refs.keepLotContext.checked = state.keepLotContext;
     refs.weight.placeholder = formatInputNumber(0);
     await refreshSessionList();
     renderAll();
@@ -183,7 +190,7 @@
 
   function donutCards(items) {
     if (!items.length) return '<p class="table-empty">No data available for this session.</p>';
-    return items.map((item) => `<article class="donut-card"><div class="donut" style="--percent:${item.percent}" role="img" aria-label="${escapeHtml(item.label)}: ${item.percent}% complete"><strong>${item.percent}%</strong></div><div><h3 title="${escapeHtml(item.label)}">${escapeHtml(item.label)}</h3><p><strong>${item.completed}</strong> weighed · <strong>${item.remaining}</strong> pending</p>${item.initial !== undefined ? `<p>Plots ${item.initial}–${item.final}</p>` : ""}</div></article>`).join("");
+    return items.map((item) => `<article class="donut-card"><div class="donut" style="--percent:${item.percent}" role="img" aria-label="${escapeHtml(item.label)}: ${item.percent}% complete"><strong>${item.percent}%</strong></div><div><h3 title="${escapeHtml(item.label)}">${escapeHtml(item.label)}</h3><p><strong>${item.completed}</strong> weighed · <strong>${item.remaining}</strong> pending</p></div></article>`).join("");
   }
 
   function fillFilter(select, values, label) {
@@ -223,7 +230,7 @@
     const status = refs.statusFilter.value;
     const filtered = activePlots().filter((plot) => {
       const weighed = records.has(normalize(plot.uuid));
-      const haystack = normalize([plot.feid, plot.uuid, plot.obsName, plot.entityName, plot.gerName, plot.location].join(" "));
+      const haystack = normalize([plot.feid, plot.uuid, plot.seasonYear, plot.obsName, plot.entityName, plot.gerName, plot.location].join(" "));
       return (!search || haystack.includes(search)) && (!trial || plot.entityName === trial) && (!location || plot.location === location)
         && (!status || (status === "weighed" ? weighed : !weighed));
     });
@@ -245,8 +252,8 @@
     const rows = filtered.slice(start, start + PAGE_SIZE);
     refs.tableBody.innerHTML = rows.length ? rows.map((plot) => {
       const record = records.get(normalize(plot.uuid));
-      return `<tr><td><span class="status-pill ${record ? "status-pill--done" : "status-pill--pending"}">${record ? "Weighed" : "Pending"}</span></td><td title="${escapeHtml(plot.entityName)}">${escapeHtml(plot.entityName)}</td><td>${escapeHtml(plot.obsName)}</td><td>${escapeHtml(plot.feid)}</td><td title="${escapeHtml(plot.uuid)}">${escapeHtml(plot.uuid)}</td><td>${escapeHtml(plot.block)}</td><td>${escapeHtml(plot.entryCode)}</td><td>${escapeHtml(plot.row)}</td><td>${escapeHtml(plot.column)}</td><td title="${escapeHtml(plot.gerName)}">${escapeHtml(plot.gerName || "—")}</td><td>${record ? escapeHtml(formatNumber(Number(record.weight))) : "—"}</td><td>${record ? escapeHtml(formatDateTime(record.weighedAt || record.updatedAt)) : "—"}</td></tr>`;
-    }).join("") : '<tr><td colspan="12" class="table-empty">No plots match the current filters.</td></tr>';
+      return `<tr><td><span class="status-pill ${record ? "status-pill--done" : "status-pill--pending"}">${record ? "Weighed" : "Pending"}</span></td><td>${escapeHtml(plot.seasonYear || "—")}</td><td title="${escapeHtml(plot.entityName)}">${escapeHtml(plot.entityName)}</td><td>${escapeHtml(plot.obsName)}</td><td>${escapeHtml(plot.feid)}</td><td title="${escapeHtml(plot.uuid)}">${escapeHtml(plot.uuid)}</td><td>${escapeHtml(plot.block)}</td><td>${escapeHtml(plot.entryCode)}</td><td>${escapeHtml(plot.row)}</td><td>${escapeHtml(plot.column)}</td><td title="${escapeHtml(plot.gerName)}">${escapeHtml(plot.gerName || "—")}</td><td>${record ? escapeHtml(formatNumber(Number(record.weight))) : "—"}</td><td>${record ? escapeHtml(formatDateTime(record.weighedAt || record.updatedAt)) : "—"}</td></tr>`;
+    }).join("") : '<tr><td colspan="13" class="table-empty">No plots match the current filters.</td></tr>';
     refs.tableCount.textContent = `${filtered.length} record${filtered.length === 1 ? "" : "s"}`;
     refs.pageSummary.textContent = filtered.length ? `${start + 1}–${Math.min(start + PAGE_SIZE, filtered.length)} of ${filtered.length}` : "0–0 of 0";
     refs.pageNumber.textContent = `Page ${state.page} of ${pages}`;
@@ -258,6 +265,9 @@
     refs.pageNextTop.disabled = refs.pageNext.disabled;
     refs.dashboardExportExcel.disabled = !state.session || !filtered.length;
     refs.dashboardExportCsv.disabled = !state.session || !filtered.length;
+    const hasWeighed = filtered.some((plot) => records.has(normalize(plot.uuid)));
+    refs.dashboardLotsExcel.disabled = !state.session || !hasWeighed;
+    refs.dashboardLotsCsv.disabled = !state.session || !hasWeighed;
     document.querySelectorAll("[data-sort]").forEach((button) => {
       if (button.dataset.sort === state.sortKey) button.dataset.direction = state.sortDirection;
       else delete button.dataset.direction;
@@ -269,18 +279,26 @@
     refs.scanError.hidden = true; refs.plotCard.hidden = false; refs.scanValue.value = "";
     text("entity-name", plot.entityName); text("obs-name", plot.obsName); text("ger-name", plot.gerName || "—");
     text("location", `⌖ ${plot.location || "Unspecified"} · ${plot.site || "Unspecified"}`);
-    text("block", plot.block || "—"); text("entry-code", plot.entryCode || "—"); text("row", plot.row || "—"); text("column", plot.column || "—"); text("feid", plot.feid); text("uuid", plot.uuid);
+    text("season-year", plot.seasonYear || "—"); text("block", plot.block || "—"); text("entry-code", plot.entryCode || "—"); text("row", plot.row || "—"); text("column", plot.column || "—"); text("feid", plot.feid); text("uuid", plot.uuid);
     const existing = weightsMap().get(normalize(plot.uuid));
     state.exactPendingWeight = existing ? Number(existing.weight) : null;
     state.weightEdited = false;
     refs.weight.value = existing ? formatInputNumber(Number(existing.weight)) : "";
+    if (existing) {
+      refs.lotSite.value = Object.prototype.hasOwnProperty.call(existing, "site") ? String(existing.site || "") : plot.site || "";
+      refs.lotStorage.value = existing.storage || "";
+    } else if (state.keepLotContext && state.hasLotContext) {
+      refs.lotSite.value = state.carriedSite; refs.lotStorage.value = state.carriedStorage;
+    } else {
+      refs.lotSite.value = plot.site || ""; refs.lotStorage.value = "";
+    }
     refs.existingBadge.hidden = !existing;
     refs.existingBadge.textContent = existing ? `Already weighed: PW ${formatNumber(existing.weight)}` : "";
     refs.saveButton.textContent = existing ? "✓ Update PW" : "✓ Save PW";
     setTimeout(() => refs.scanValue.focus(), 0);
   }
   function clearSelection() {
-    state.selected = null; state.exactPendingWeight = null; state.weightEdited = false; refs.plotCard.hidden = true; refs.scanValue.value = ""; refs.weight.value = "";
+    state.selected = null; state.exactPendingWeight = null; state.weightEdited = false; refs.plotCard.hidden = true; refs.scanValue.value = ""; refs.weight.value = ""; refs.lotSite.value = ""; refs.lotStorage.value = "";
     setTimeout(() => refs.scanValue.focus(), 0);
   }
   function refreshPrecisionDisplay() {
@@ -304,8 +322,16 @@
     refs.saveButton.disabled = true;
     try {
       const plot = state.selected;
-      const saved = await window.GdmWeighingStore.saveWeight(state.database, state.session.id, plot, weight, state.serialPort ? "serial" : "manual");
+      const saved = await window.GdmWeighingStore.saveWeight(
+        state.database, state.session.id, plot, weight, state.serialPort ? "serial" : "manual", undefined,
+        { site: refs.lotSite.value, storage: refs.lotStorage.value, keepForNext: state.keepLotContext },
+      );
       state.weights = [saved, ...state.weights.filter((item) => normalize(item.uuid) !== normalize(saved.uuid))];
+      if (state.keepLotContext) {
+        state.carriedSite = saved.site || ""; state.carriedStorage = saved.storage || ""; state.hasLotContext = true;
+      } else {
+        state.carriedSite = ""; state.carriedStorage = ""; state.hasLotContext = false;
+      }
       state.session.updatedAt = new Date().toISOString();
       renderAll();
       showToast(`PW ${formatNumber(weight)} saved for plot ${plot.obsName}.`);
@@ -347,6 +373,14 @@
     if (!exportPlots.length) { showToast("No plot records match the current filters.", true); return; }
     try { const count = window.GdmWeighingUtils.exportSession(state.session, state.weights, format, exportPlots, state.decimalPlaces); showToast(`${count} ${filteredOnly ? "filtered " : ""}plot records exported to ${format === "xlsx" ? "Excel" : "CSV"} with ${state.decimalPlaces} decimal place${state.decimalPlaces === 1 ? "" : "s"}.`); }
     catch (error) { showToast(error instanceof Error ? error.message : "Could not export the session.", true); }
+  }
+
+  function exportLots(format) {
+    if (!state.session) { showToast("Load a weighing session before exporting lots.", true); return; }
+    try {
+      const count = window.GdmWeighingUtils.exportLots(state.session, state.weights, format, state.filteredPlots, state.decimalPlaces);
+      showToast(`${count} filtered lot record${count === 1 ? "" : "s"} exported to ${format === "xlsx" ? "Excel" : "CSV"}.`);
+    } catch (error) { showToast(error instanceof Error ? error.message : "Could not export lots.", true); }
   }
 
   function parseScaleWeight(rawLine) {
@@ -453,6 +487,17 @@
   }, true);
   refs.weightForm.addEventListener("submit", (event) => { event.preventDefault(); void saveCurrentWeight(); });
   refs.weight.addEventListener("input", () => { state.weightEdited = true; state.exactPendingWeight = null; });
+  refs.keepLotContext.addEventListener("change", async () => {
+    state.keepLotContext = refs.keepLotContext.checked;
+    if (!state.keepLotContext) { state.hasLotContext = false; state.carriedSite = ""; state.carriedStorage = ""; }
+    if (!state.session) return;
+    try {
+      await window.GdmWeighingStore.setLotContext(state.database, state.session.id, {
+        keepForNext: state.keepLotContext, hasValue: state.keepLotContext ? state.hasLotContext : false,
+        site: state.keepLotContext ? state.carriedSite : "", storage: state.keepLotContext ? state.carriedStorage : "",
+      });
+    } catch (error) { showToast(error instanceof Error ? error.message : "Could not save the lot field preference.", true); }
+  });
   refs.scaleFactor.value = String(state.scaleExponent);
   refs.scaleFactor.addEventListener("change", () => { state.scaleExponent = Number(refs.scaleFactor.value); localStorage.setItem(SCALE_EXPONENT_KEY, String(state.scaleExponent)); if (state.rawScaleWeight !== null) applyScaleWeight(state.rawScaleWeight, ""); showToast(state.scaleExponent ? `Scale factor applied: reading ${scaleFactorLabel()}.` : "Raw scale value selected."); });
   refs.decimalPlaces.value = String(state.decimalPlaces);
@@ -469,6 +514,8 @@
   refs.exportCsv.addEventListener("click", () => exportData("csv"));
   refs.dashboardExportExcel.addEventListener("click", () => exportData("xlsx", true));
   refs.dashboardExportCsv.addEventListener("click", () => exportData("csv", true));
+  refs.dashboardLotsExcel.addEventListener("click", () => exportLots("xlsx"));
+  refs.dashboardLotsCsv.addEventListener("click", () => exportLots("csv"));
   refs.sessionSelect.addEventListener("change", () => void setActiveSession(refs.sessionSelect.value));
   refs.trialSlicerButton.addEventListener("click", () => {
     refs.trialSlicerMenu.hidden = !refs.trialSlicerMenu.hidden;

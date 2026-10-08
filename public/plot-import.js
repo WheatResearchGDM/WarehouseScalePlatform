@@ -5,6 +5,7 @@
     ["id", "ID", ["ID."]],
     ["feid", "FEID", ["ID.FE.", "ID FE"]],
     ["uuid", "UUID", []],
+    ["seasonYear", "Season year", []],
     ["entityName", "Entity name", ["Nombre de la entidad", "Nome da entidade"]],
     ["trialType", "Trial type", ["Tipo de ensayo", "Tipo de ensaio"]],
     ["site", "Site", ["Sitio", "Unidade"]],
@@ -21,6 +22,7 @@
     ["pw", "PW", []],
   ];
   const optionalFields = [
+    ["storage", "Storage"],
     ["weighingStatus", "Weighing status"], ["weighedAt", "Weighed at"],
     ["sessionId", "Session ID"], ["sessionName", "Session name"], ["exportedAt", "Exported at"],
   ];
@@ -80,6 +82,7 @@
       if (!row.some((value) => cellText(value))) continue;
       const plot = {
         id: cellText(row[indexes.id]), feid: cellText(row[indexes.feid]), uuid: cellText(row[indexes.uuid]).toUpperCase(),
+        seasonYear: cellText(row[indexes.seasonYear]),
         entityName: cellText(row[indexes.entityName]), trialType: cellText(row[indexes.trialType]), site: cellText(row[indexes.site]),
         location: cellText(row[indexes.location]), row: cellText(row[indexes.row]), column: cellText(row[indexes.column]),
         entryCode: cellText(row[indexes.entryCode]), block: cellText(row[indexes.block]), obsName: cellText(row[indexes.obsName]),
@@ -87,6 +90,7 @@
         finalPlot: numericCell(row[indexes.finalPlot]),
       };
       const invalid = !plot.feid || !plot.uuid || !plot.entityName || !plot.obsName
+        || !plot.seasonYear
         || !Number.isFinite(plot.initialPlot) || !Number.isFinite(plot.finalPlot)
         || plot.finalPlot < plot.initialPlot || feids.has(plot.feid.toUpperCase()) || uuids.has(plot.uuid);
       if (invalid) { invalidRows.push(index + 1); continue; }
@@ -97,7 +101,11 @@
       if (pwText) {
         const weight = numericCell(row[indexes.pw]);
         if (Number.isFinite(weight) && weight >= 0) {
-          importedWeights.push({ uuid: plot.uuid, weight, weighedAt: indexes.weighedAt >= 0 ? validDateText(row[indexes.weighedAt]) : "" });
+          importedWeights.push({
+            uuid: plot.uuid, weight, site: plot.site,
+            storage: indexes.storage >= 0 ? cellText(row[indexes.storage]) : "",
+            weighedAt: indexes.weighedAt >= 0 ? validDateText(row[indexes.weighedAt]) : "",
+          });
         } else invalidWeightRows.push(index + 1);
       }
     }

@@ -1,0 +1,4 @@
+ID,FEID,UUID,Season year,Entity name,Trial type,Site,Location,Row,Column,Entry code,Block,(OBS) Name,GID,(GER) Name,Initial plot,Final plot,PW
+1,1001,00000000-0000-0000-0000-000000000001,2026,Trial Alpha,EYT,Imported Site,North,1,1,E1,1,Plot 101,G1,GER 1,100,999,
+2,1002,00000000-0000-0000-0000-000000000002,2026,Trial Alpha,EYT,Imported Site,North,1,2,E2,1,Plot 102,G2,GER 2,100,999,
+3,2001,00000000-0000-0000-0000-000000000003,2026,Trial Beta,PRYT,Imported Site,South,2,1,E3,2,Plot 201,G3,GER 3,200,999,

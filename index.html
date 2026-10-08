@@ -89,10 +89,15 @@
           </div>
           <div class="plot-card__body">
             <dl class="details-grid">
-              <div><dt>Block</dt><dd id="block"></dd></div><div><dt>Entry code</dt><dd id="entry-code"></dd></div><div><dt>Row</dt><dd id="row"></dd></div><div><dt>Column</dt><dd id="column"></dd></div>
+              <div><dt>Season year</dt><dd id="season-year"></dd></div><div><dt>Block</dt><dd id="block"></dd></div><div><dt>Entry code</dt><dd id="entry-code"></dd></div><div><dt>Row</dt><dd id="row"></dd></div><div><dt>Column</dt><dd id="column"></dd></div>
               <div class="identifiers"><dt>Identifiers</dt><dd><span><b>FEID:</b> <i id="feid"></i></span><span><b>UUID:</b> <i id="uuid"></i></span></dd></div>
             </dl>
-            <form id="weight-form" class="weight-form"><label for="plot-weight">⚖ Plot weight (PW)</label><input id="plot-weight" inputmode="decimal" autocomplete="off" placeholder="0.000" /><button id="save-button" type="submit">✓ Save PW</button></form>
+            <form id="weight-form" class="weight-form">
+              <label for="plot-weight">⚖ Plot weight (PW)</label><input id="plot-weight" inputmode="decimal" autocomplete="off" placeholder="0.000" />
+              <div class="lot-fields"><label for="lot-site">Site<input id="lot-site" autocomplete="off" placeholder="Site" /></label><label for="lot-storage">Storage<input id="lot-storage" autocomplete="off" placeholder="Storage" /></label></div>
+              <label class="keep-lot-context"><input id="keep-lot-context" type="checkbox" checked /><span>Keep Site and Storage for next plot</span></label>
+              <button id="save-button" type="submit">✓ Save PW</button>
+            </form>
           </div>
         </article>
 
@@ -111,10 +116,10 @@
         <section class="panel dashboard-panel"><div class="section-heading"><div><p class="eyebrow">Trials</p><h2>Progress by trial</h2></div></div><div id="trial-donuts" class="donut-grid"></div></section>
         <section class="panel dashboard-panel"><div class="section-heading"><div><p class="eyebrow">Locations</p><h2>Progress by location</h2></div></div><div id="location-donuts" class="donut-grid"></div></section>
         <section class="panel dashboard-panel table-panel">
-          <div class="section-heading"><div><p class="eyebrow">Plot records</p><h2>Weighing data</h2></div><div class="table-heading-actions"><strong id="table-count">0 records</strong><button id="dashboard-export-excel" class="outline-button" type="button">⇩ Export filtered Excel</button><button id="dashboard-export-csv" class="outline-button" type="button">⇩ Export filtered CSV</button></div></div>
+          <div class="section-heading"><div><p class="eyebrow">Plot records</p><h2>Weighing data</h2></div><div class="table-heading-actions"><strong id="table-count">0 records</strong><button id="dashboard-export-excel" class="outline-button" type="button">⇩ Export filtered Excel</button><button id="dashboard-export-csv" class="outline-button" type="button">⇩ Export filtered CSV</button><button id="dashboard-lots-excel" class="outline-button lot-export-button" type="button">⇩ Export lots Excel</button><button id="dashboard-lots-csv" class="outline-button lot-export-button" type="button">⇩ Export lots CSV</button></div></div>
           <div class="filters"><input id="table-search" type="search" placeholder="Search FEID, UUID, OBS or names…" /><select id="trial-filter"><option value="">All trials</option></select><select id="location-filter"><option value="">All locations</option></select><select id="status-filter"><option value="">All statuses</option><option value="weighed">Weighed</option><option value="pending">Pending</option></select></div>
           <div class="pagination pagination--top"><span id="page-summary-top">0–0 of 0</span><div><button id="page-prev-top" type="button">← Previous</button><span id="page-number-top">Page 1 of 1</span><button id="page-next-top" type="button">Next →</button></div></div>
-          <div class="table-wrap"><table><thead><tr><th><button type="button" data-sort="status">Status</button></th><th><button type="button" data-sort="entityName">Entity name</button></th><th><button type="button" data-sort="obsName">(OBS) Name</button></th><th><button type="button" data-sort="feid">FEID</button></th><th><button type="button" data-sort="uuid">UUID</button></th><th><button type="button" data-sort="block">Block</button></th><th><button type="button" data-sort="entryCode">Entry code</button></th><th><button type="button" data-sort="row">Row</button></th><th><button type="button" data-sort="column">Column</button></th><th><button type="button" data-sort="gerName">(GER) Name</button></th><th><button type="button" data-sort="weight">PW</button></th><th><button type="button" data-sort="weighedAt">Weighed at</button></th></tr></thead><tbody id="plot-table-body"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th><button type="button" data-sort="status">Status</button></th><th><button type="button" data-sort="seasonYear">Season year</button></th><th><button type="button" data-sort="entityName">Entity name</button></th><th><button type="button" data-sort="obsName">(OBS) Name</button></th><th><button type="button" data-sort="feid">FEID</button></th><th><button type="button" data-sort="uuid">UUID</button></th><th><button type="button" data-sort="block">Block</button></th><th><button type="button" data-sort="entryCode">Entry code</button></th><th><button type="button" data-sort="row">Row</button></th><th><button type="button" data-sort="column">Column</button></th><th><button type="button" data-sort="gerName">(GER) Name</button></th><th><button type="button" data-sort="weight">PW</button></th><th><button type="button" data-sort="weighedAt">Weighed at</button></th></tr></thead><tbody id="plot-table-body"></tbody></table></div>
           <div class="pagination"><span id="page-summary">0–0 of 0</span><div><button id="page-prev" type="button">← Previous</button><span id="page-number">Page 1 of 1</span><button id="page-next" type="button">Next →</button></div></div>
         </section>
       </section>
